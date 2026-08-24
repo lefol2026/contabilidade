@@ -7,7 +7,7 @@ import io
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal & Anual", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Fiscal")
-st.caption("Consolidação Inteligente via XMLs: Visão Mensal, Anual e Apuração de Impostos")
+st.caption("Consolidação Inteligente via XMLs: Filtro por CNPJ e Apuração de Impostos")
 
 # --- CNPJs E ALÍQUOTAS DO GRUPO ---
 EMPRESAS_CONFIG = {
@@ -58,9 +58,9 @@ def extrair_dados_xml(xml_content, nome_arquivo):
             return {
                 'Arquivo': nome_arquivo,
                 'Tipo Operação': tipo_operacao,
-                'CNPJ Emitente': cnpj_emit,
+                'CNPJ Emitente': cnpj_emit_limpo,
                 'Emitente': raz_emit,
-                'CNPJ Destinatário': cnpj_dest,
+                'CNPJ Destinatário': cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip(),
                 'Destinatário': raz_dest,
                 'Data Emissão': dt_emissao,
                 'Valor Total (R$)': v_nf
@@ -91,7 +91,7 @@ def ler_zip_recursivo(zip_bytes, nome_origem):
 # --- PROCESSAMENTO ---
 if btn_processar and arquivos_subidos:
     dados_nfs = []
-    with st.spinner("Analisando notas fiscais... Aguarde!"):
+    with st.spinner("Analisando e validando CNPJs das notas fiscais..."):
         for arq in arquivos_subidos:
             if arq.name.lower().endswith('.zip'):
                 dados_nfs.extend(ler_zip_recursivo(arq.read(), arq.name))
@@ -106,7 +106,7 @@ if btn_processar and arquivos_subidos:
         df_temp['Ano'] = df_temp['Data_Parsed'].dt.year
         df_temp['Mês'] = df_temp['Data_Parsed'].dt.month
         st.session_state['df_nfs'] = df_temp
-        st.success(f"✅ Sucesso! {len(dados_nfs)} notas fiscais foram lidas e processadas.")
+        st.success(f"✅ Sucesso! {len(dados_nfs)} notas fiscais foram lidas e validadas.")
     else:
         st.warning("⚠️ Nenhum arquivo XML válido foi encontrado no pacote enviado.")
 
@@ -139,7 +139,7 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         imposto_mes = 0.0
         if not df_mes.empty:
             for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-                sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['Emitente'].str.contains(emp_nome.split()[0], case=False, na=False))]['Valor Total (R$)'].sum()
+                sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['CNPJ Emitente'] == emp_info['cnpj'])]['Valor Total (R$)'].sum()
                 imposto_mes += sub_vendas * emp_info['aliq']
 
         st.subheader(f"🔄 Balanço Mensal — {meses_dict[mes_sel]}/{ano_sel}")
@@ -186,7 +186,8 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         for emp_nome, emp_info in EMPRESAS_CONFIG.items():
             sub_vendas = 0.0
             if not df_mes.empty:
-                sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['Emitente'].str.contains(emp_nome.split()[0], case=False, na=False))]['Valor Total (R$)'].sum()
+                # Filtra estritamente pelo CNPJ cadastrado da empresa
+                sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['CNPJ Emitente'] == emp_info['cnpj'])]['Valor Total (R$)'].sum()
             
             imposto_apurado = sub_vendas * emp_info['aliq']
             
