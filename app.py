@@ -2,13 +2,63 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
+import sqlite3
 from datetime import datetime
 import calendar
 
 st.set_page_config(page_title="Consolidação Grupo & Tiny ERP", layout="wide")
 
-st.title("📊 Painel Consolidado - Compras, Vendas & Inteligência Fiscal")
-st.caption("Consulta em Tempo Real: RTX Imports, BRA, BG e BW (B R Totti)")
+st.title("📊 Painel Consolidado - Tiny ERP & Inteligência Fiscal")
+st.caption("Consulta Otimizada com Banco Local e Seleção Dinâmica de Período")
+
+# --- BANCO DE DADOS LOCAL (SQLITE) ---
+DB_FILE = "dados_tiny.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS faturamento (
+            empresa TEXT,
+            mes INTEGER,
+            ano INTEGER,
+            qtd_compras INTEGER,
+            total_compras REAL,
+            qtd_vendas INTEGER,
+            total_vendas REAL,
+            data_atualizacao TEXT,
+            PRIMARY KEY (empresa, mes, ano)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def salvar_no_banco(empresa, mes, ano, qtd_c, total_c, qtd_v, total_v):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    data_hoje = datetime.now().strftime("%d/%m/%Y %H:%M")
+    c.execute('''
+        INSERT OR REPLACE INTO faturamento 
+        (empresa, mes, ano, qtd_compras, total_compras, qtd_vendas, total_vendas, data_atualizacao)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (empresa, mes, ano, qtd_c, total_c, qtd_v, total_v, data_hoje))
+    conn.commit()
+    conn.close()
+
+def buscar_do_banco(empresa, mes, ano):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT qtd_compras, total_compras, qtd_vendas, total_vendas, data_atualizacao 
+        FROM faturamento WHERE empresa = ? AND mes = ? AND ano = ?
+    ''', (empresa, mes, ano))
+    res = c.fetchone()
+    conn.close()
+    if res:
+        return {'qtd_c': res[0], 'total_c': res[1], 'qtd_v': res[2], 'total_v': res[3], 'atualizacao': res[4]}
+    return None
 
 # --- BARRA LATERAL: FILTROS DE MÊS E ANO ---
 st.sidebar.header("📅 Filtro de Período")
@@ -31,6 +81,9 @@ ultimo_dia_num = calendar.monthrange(ano_selecionado, mes_selecionado)[1]
 ultimo_dia = f"{ultimo_dia_num:02d}/{mes_selecionado:02d}/{ano_selecionado}"
 
 st.sidebar.info(f"📆 **Período Selecionado:**\n{primeiro_dia} até {ultimo_dia}")
+st.sidebar.markdown("---")
+
+forcar_sync = st.sidebar.button("🔄 Buscar Dados Atualizados no Tiny")
 
 EMPRESAS = {
     "RTX IMPORTS (Importadora / Hub MG)": {
@@ -55,58 +108,30 @@ EMPRESAS = {
     }
 }
 
-@st.cache_data(ttl=300)
-def consultar_vendas(token, d_inicio, d_fim):
+# --- CONSULTAS NA API (SEM CACHE ESTÁTICO DENTRO DA FUNÇÃO) ---
+def consultar_vendas_api(token, d_inicio, d_fim):
     url = "https://api.tiny.com.br/api2/pedidos.pesquisa.php"
     payload = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim}
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=15)
-        dados = response.json()
-        retorno = dados.get('retorno', {})
-        if retorno.get('status') == 'OK':
-            pedidos = retorno.get('pedidos', [])
-            total = sum(float(p['pedido']['valor']) for p in pedidos if 'pedido' in p)
-            return {'qtd': len(pedidos), 'total': total}
-        return {'qtd': 0, 'total': 0.0}
-    except Exception:
-        return {'qtd': 0, 'total': 0.0}
-
-@st.cache_data(ttl=300)
-def consultar_compras_unificado(token, d_inicio, d_fim):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    # Busca 1: Ordens de Compra (Suprimentos)
-    url_compras = "https://api.tiny.com.br/api2/notas.fiscais.compras.pesquisa.php"
-    payload1 = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim}
-    
-    total_compras = 0.0
-    qtd_compras = 0
-    
-    try:
-        res1 = requests.post(url_compras, data=payload1, headers=headers, timeout=10).json()
-        if res1.get('retorno', {}).get('status') == 'OK':
-            notas = res1['retorno'].get('notas_fiscais', [])
-            total_compras += sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
-            qtd_compras += len(notas)
+        res = requests.post(url, data=payload, headers={'User-Agent': 'Mozilla/5.0'}, timeout=12).json()
+        if res.get('retorno', {}).get('status') == 'OK':
+            pedidos = res['retorno'].get('pedidos', [])
+            return {'qtd': len(pedidos), 'total': sum(float(p['pedido']['valor']) for p in pedidos if 'pedido' in p)}
     except Exception:
         pass
-        
-    # Busca 2: Notas de Entrada (Tipo E)
-    url_entradas = "https://api.tiny.com.br/api2/notas.fiscais.pesquisa.php"
-    payload2 = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim, 'tipo': 'E'}
-    
+    return {'qtd': 0, 'total': 0.0}
+
+def consultar_compras_api(token, d_inicio, d_fim):
+    url = "https://api.tiny.com.br/api2/notas.fiscais.pesquisa.php"
+    payload = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim, 'tipo': 'E'}
     try:
-        res2 = requests.post(url_entradas, data=payload2, headers=headers, timeout=10).json()
-        if res2.get('retorno', {}).get('status') == 'OK':
-            notas = res2['retorno'].get('notas_fiscais', [])
-            total_compras += sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
-            qtd_compras += len(notas)
+        res = requests.post(url, data=payload, headers={'User-Agent': 'Mozilla/5.0'}, timeout=12).json()
+        if res.get('retorno', {}).get('status') == 'OK':
+            notas = res['retorno'].get('notas_fiscais', [])
+            return {'qtd': len(notas), 'total': sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)}
     except Exception:
         pass
-
-    return {'qtd': qtd_compras, 'total': total_compras}
+    return {'qtd': 0, 'total': 0.0}
 
 # --- PROCESSAMENTO PRINCIPAL ---
 st.subheader(f"🔄 Balanço de Compras vs Vendas — {meses_dict[mes_selecionado]}/{ano_selecionado}")
@@ -117,16 +142,25 @@ total_compras_grupo = 0.0
 total_impostos_grupo = 0.0
 
 for nome_empresa, info in EMPRESAS.items():
-    res_vendas = consultar_vendas(info['token'], primeiro_dia, ultimo_dia)
-    time.sleep(0.3)
+    dados_locais = buscar_do_banco(nome_empresa, mes_selecionado, ano_selecionado)
     
-    res_compras = consultar_compras_unificado(info['token'], primeiro_dia, ultimo_dia)
-    time.sleep(0.3)
-    
-    vendas = res_vendas['total']
-    compras = res_compras['total']
+    if not dados_locais or forcar_sync:
+        res_v = consultar_vendas_api(info['token'], primeiro_dia, ultimo_dia)
+        time.sleep(0.3)
+        res_c = consultar_compras_api(info['token'], primeiro_dia, ultimo_dia)
+        time.sleep(0.3)
+        
+        salvar_no_banco(nome_empresa, mes_selecionado, ano_selecionado, res_c['qtd'], res_c['total'], res_v['qtd'], res_v['total'])
+        vendas, compras, qtd_v, qtd_c = res_v['total'], res_c['total'], res_v['qtd'], res_c['qtd']
+        status_origem = "⚡ Atualizado via API"
+    else:
+        vendas = dados_locais['total_v']
+        compras = dados_locais['total_c']
+        qtd_v = dados_locais['qtd_v']
+        qtd_c = dados_locais['qtd_c']
+        status_origem = f"💾 Banco Local ({dados_locais['atualizacao']})"
+
     impostos = vendas * info['aliq_imposto']
-    
     total_vendas_grupo += vendas
     total_compras_grupo += compras
     total_impostos_grupo += impostos
@@ -134,9 +168,10 @@ for nome_empresa, info in EMPRESAS.items():
     resultados.append({
         "Empresa": nome_empresa,
         "Regime Fiscal": info['regime'],
-        "NFs Compras/Entrada": res_compras['qtd'],
+        "Origem": status_origem,
+        "NFs Entrada": qtd_c,
         "Total Comprado (Entradas)": f"R$ {compras:,.2f}",
-        "Qtd Vendas": res_vendas['qtd'],
+        "Qtd Vendas": qtd_v,
         "Total Vendido (Saídas)": f"R$ {vendas:,.2f}",
         "Resultado Bruto": f"R$ {(vendas - compras):,.2f}",
         "Impostos Est.": f"R$ {impostos:,.2f}"
@@ -150,7 +185,5 @@ c3.metric("Resultado Operacional", f"R$ {(total_vendas_grupo - total_compras_gru
 c4.metric("Impostos Consolidados Est.", f"R$ {total_impostos_grupo:,.2f}")
 
 st.markdown("---")
-
-# TABELA
 df_resultado = pd.DataFrame(resultados)
 st.dataframe(df_resultado, use_container_width=True)
