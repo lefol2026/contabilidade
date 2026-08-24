@@ -1,159 +1,112 @@
 import streamlit as st
 import pandas as pd
-import requests
-import time
-from datetime import datetime
-import calendar
+import xml.etree.ElementTree as ET
+import os
+import gdown
+import zipfile
 
-st.set_page_config(page_title="Consolidação Grupo & Tiny ERP", layout="wide")
+st.set_page_config(page_title="Consolidação Grupo - NFs Google Drive", layout="wide")
 
-st.title("📊 Painel Consolidado - Tiny ERP & Inteligência Fiscal")
-st.caption("Consulta em Tempo Real com Filtros de Período Corrigidos")
+st.title("📊 Painel Consolidado — Leitura de NFs do Google Drive")
+st.caption("Sincronização direta com a pasta pública de XMLs do Google Drive")
 
-# --- BARRA LATERAL: FILTROS DE MÊS E ANO ---
-st.sidebar.header("📅 Filtro de Período")
+ID_PASTA_DRIVE = "1o9va-LV2UjCDIhasFuw8B_7E-Pef8Q5V"
+PASTA_LOCAL = "nfs_download"
 
-ano_atual = datetime.now().year
-mes_atual = datetime.now().month
-
-anos_disponiveis = list(range(2023, ano_atual + 1))
-meses_dict = {
-    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
-    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
-    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
-}
-
-ano_selecionado = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis, index=anos_disponiveis.index(ano_atual))
-mes_selecionado = st.sidebar.selectbox("Selecione o Mês", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], index=mes_atual - 1)
-
-# Datas formatadas para a API
-primeiro_dia = f"01/{mes_selecionado:02d}/{ano_selecionado}"
-ultimo_dia_num = calendar.monthrange(ano_selecionado, mes_selecionado)[1]
-ultimo_dia = f"{ultimo_dia_num:02d}/{mes_selecionado:02d}/{ano_selecionado}"
-
-st.sidebar.info(f"📆 **Período Selecionado:**\n{primeiro_dia} até {ultimo_dia}")
-
-EMPRESAS = {
-    "RTX IMPORTS (Importadora / Hub MG)": {
-        "token": "031d36f9e1eb45afbaec8c8a9ca7cd3d21d1974e49eed05e6c97613494175fee",
-        "aliq_imposto": 0.06,
-        "regime": "Lucro Presumido / TTS Importação"
-    },
-    "BRA ADESIVOS (M C R Totti LTDA)": {
-        "token": "028e0a127dd20018e5c58cd3deac3b1c52d008fc7556da907f4844f2b35f9014",
-        "aliq_imposto": 0.1132,
-        "regime": "Lucro Presumido"
-    },
-    "BG ADESIVOS (BG Adesivos LTDA)": {
-        "token": "d8d3b4f28ffde1f20dfcc9351f70b02e3ba53537465c2bc43bb0821b442197fa",
-        "aliq_imposto": 0.1132,
-        "regime": "Lucro Presumido"
-    },
-    "BW ADESIVOS (B R Totti LTDA)": {
-        "token": "a38cdbdb2b01b3aec71a4392d9aea173926343db673d23c30261854e58d3e992",
-        "aliq_imposto": 0.1132,
-        "regime": "Lucro Presumido"
-    }
-}
-
-# --- CONSULTA DE VENDAS (PEDIDOS) ---
-def consultar_vendas_tiny(token, d_inicio, d_fim):
-    url = "https://api.tiny.com.br/api2/pedidos.pesquisa.php"
-    payload = {
-        'token': token,
-        'formato': 'json',
-        'data_inicial': d_inicio,
-        'data_final': d_fim
-    }
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=12)
-        dados = response.json()
-        retorno = dados.get('retorno', {})
+# --- FUNÇÃO PARA BAIXAR DA PASTA PÚBLICA DO DRIVE ---
+@st.cache_data(ttl=3600)
+def baixar_xmls_drive(folder_id):
+    if not os.path.exists(PASTA_LOCAL):
+        os.makedirs(PASTA_LOCAL)
         
-        if retorno.get('status') == 'OK':
-            pedidos = retorno.get('pedidos', [])
-            total = sum(float(p['pedido']['valor']) for p in pedidos if 'pedido' in p)
-            return {'qtd': len(pedidos), 'total': total, 'status': '🟢 Conectado'}
-        elif retorno.get('status') == 'ERRO':
-            erros = retorno.get('erros', [{}])
-            msg = erros[0].get('erro', 'Sem dados')
-            return {'qtd': 0, 'total': 0.0, 'status': f'🟡 {msg}'}
+    url_folder = f"https://drive.google.com/drive/folders/{folder_id}"
+    try:
+        # Baixa o conteúdo da pasta do Drive diretamente
+        gdown.download_folder(url_folder, output=PASTA_LOCAL, quiet=True, remaining_ok=True)
+        return True
     except Exception as e:
-        return {'qtd': 0, 'total': 0.0, 'status': '🔴 Erro Conexão'}
-    
-    return {'qtd': 0, 'total': 0.0, 'status': '⚪ Sem Pedidos'}
+        st.error(f"Erro ao acessar a pasta do Drive: {e}")
+        return False
 
-# --- CONSULTA DE COMPRAS (NOTAS FISCAIS DE ENTRADA) ---
-def consultar_compras_tiny(token, d_inicio, d_fim):
-    url = "https://api.tiny.com.br/api2/notas.fiscais.pesquisa.php"
-    payload = {
-        'token': token,
-        'formato': 'json',
-        'data_inicial': d_inicio,
-        'data_final': d_fim,
-        'tipo': 'E'
-    }
-    headers = {'User-Agent': 'Mozilla/5.0'}
+# --- FUNÇÃO PARA EXTRAIR DADOS DOS XMLs ---
+def processar_xmls(pasta):
+    dados_nfs = []
     
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=12)
-        dados = response.json()
-        retorno = dados.get('retorno', {})
+    for root_dir, _, files in os.walk(pasta):
+        for file in files:
+            if file.endswith('.xml'):
+                caminho_xml = os.path.join(root_dir, file)
+                try:
+                    tree = ET.parse(caminho_xml)
+                    root = tree.getroot()
+                    ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
+                    
+                    inf_nfe = root.find('.//nfe:infNFe', ns)
+                    if inf_nfe is not None:
+                        ide = inf_nfe.find('nfe:ide', ns)
+                        emit = inf_nfe.find('nfe:emit', ns)
+                        dest = inf_nfe.find('nfe:dest', ns)
+                        total = inf_nfe.find('.//nfe:ICMSTot', ns)
+                        
+                        dt_emissao = ide.find('nfe:dhEmi', ns).text[:10] if ide.find('nfe:dhEmi', ns) is not None else ""
+                        raz_emit = emit.find('nfe:xNome', ns).text if emit.find('nfe:xNome', ns) is not None else ""
+                        cnpj_emit = emit.find('nfe:CNPJ', ns).text if emit.find('nfe:CNPJ', ns) is not None else ""
+                        
+                        raz_dest = dest.find('nfe:xNome', ns).text if dest is not None and dest.find('nfe:xNome', ns) is not None else ""
+                        v_nf = float(total.find('nfe:vNF', ns).text) if total is not None and total.find('nfe:vNF', ns) is not None else 0.0
+                        
+                        dados_nfs.append({
+                            'Arquivo': file,
+                            'CNPJ Emitente': cnpj_emit,
+                            'Emitente': raz_emit,
+                            'Destinatário': raz_dest,
+                            'Data Emissão': dt_emissao,
+                            'Valor Total (R$)': v_nf
+                        })
+                except Exception:
+                    pass
+    return pd.DataFrame(dados_nfs)
+
+# --- EXECUÇÃO DO FLUXO ---
+st.sidebar.header("🔄 Sincronização Drive")
+if st.sidebar.button("⚡ Sincronizar com o Google Drive"):
+    st.cache_data.clear()
+    st.rerun()
+
+with st.spinner("Conectando ao Google Drive e analisando as Notas Fiscais..."):
+    sucesso = baixar_xmls_drive(ID_PASTA_DRIVE)
+
+if sucesso:
+    df_nfs = processar_xmls(PASTA_LOCAL)
+    
+    if not df_nfs.empty:
+        df_nfs['Data_Parsed'] = pd.to_datetime(df_nfs['Data Emissão'], errors='coerce')
+        df_nfs['Ano'] = df_nfs['Data_Parsed'].dt.year
+        df_nfs['Mês'] = df_nfs['Data_Parsed'].dt.month
         
-        if retorno.get('status') == 'OK':
-            notas = retorno.get('notas_fiscais', [])
-            total = sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
-            return {'qtd': len(notas), 'total': total}
-    except Exception:
-        pass
+        # Filtros Dinâmicos
+        st.sidebar.header("📅 Filtro de Período")
+        anos_disp = sorted([int(a) for a in df_nfs['Ano'].dropna().unique()])
+        ano_sel = st.sidebar.selectbox("Selecione o Ano", anos_disp, index=len(anos_disp)-1 if anos_disp else 0)
         
-    return {'qtd': 0, 'total': 0.0}
-
-# --- EXIBIÇÃO PRINCIPAL ---
-st.subheader(f"🔄 Balanço Consolidado — {meses_dict[mes_selecionado]}/{ano_selecionado}")
-
-resultados = []
-total_vendas_grupo = 0.0
-total_compras_grupo = 0.0
-total_impostos_grupo = 0.0
-
-for nome_empresa, info in EMPRESAS.items():
-    res_vendas = consultar_vendas_tiny(info['token'], primeiro_dia, ultimo_dia)
-    time.sleep(0.4) # Intervalo para evitar rejeição da API
-    
-    res_compras = consultar_compras_tiny(info['token'], primeiro_dia, ultimo_dia)
-    time.sleep(0.4)
-    
-    vendas = res_vendas['total']
-    compras = res_compras['total']
-    impostos = vendas * info['aliq_imposto']
-    
-    total_vendas_grupo += vendas
-    total_compras_grupo += compras
-    total_impostos_grupo += impostos
-    
-    resultados.append({
-        "Empresa": nome_empresa,
-        "Regime Fiscal": info['regime'],
-        "Status": res_vendas['status'],
-        "NFs Entrada": res_compras['qtd'],
-        "Total Comprado (Entradas)": f"R$ {compras:,.2f}",
-        "Qtd Vendas": res_vendas['qtd'],
-        "Total Vendido (Saídas)": f"R$ {vendas:,.2f}",
-        "Resultado Bruto": f"R$ {(vendas - compras):,.2f}",
-        "Impostos Est.": f"R$ {impostos:,.2f}"
-    })
-
-# MÉTRICAS RESUMO
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Entradas (Compras/DI)", f"R$ {total_compras_grupo:,.2f}")
-c2.metric("Total Saídas (Vendas)", f"R$ {total_vendas_grupo:,.2f}")
-c3.metric("Resultado Operacional", f"R$ {(total_vendas_grupo - total_compras_grupo):,.2f}")
-c4.metric("Impostos Consolidados Est.", f"R$ {total_impostos_grupo:,.2f}")
-
-st.markdown("---")
-
-df_resultado = pd.DataFrame(resultados)
-st.dataframe(df_resultado, use_container_width=True)
+        meses_dict = {
+            1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+            5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+            9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
+        }
+        mes_sel = st.sidebar.selectbox("Selecione o Mês", list(meses_dict.keys()), format_func=lambda x: meses_dict[x])
+        
+        # Filtragem
+        df_filtrado = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mês'] == mes_sel)]
+        
+        st.subheader(f"🔄 Resumo de NFs — {meses_dict[mes_sel]}/{ano_sel}")
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Valor Total das NFs no Mês", f"R$ {df_filtrado['Valor Total (R$)'].sum():,.2f}")
+        c2.metric("Qtd. de NFs no Mês", len(df_filtrado))
+        c3.metric("Total de XMLs na Pasta", len(df_nfs))
+        
+        st.markdown("---")
+        st.dataframe(df_filtrado[['Arquivo', 'Data Emissão', 'Emitente', 'Destinatário', 'Valor Total (R$)']], use_container_width=True)
+    else:
+        st.warning("A pasta do Google Drive foi acessada, mas nenhum arquivo XML válido foi encontrado dentro dela.")
