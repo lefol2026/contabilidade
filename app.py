@@ -17,10 +17,9 @@ EMPRESAS_CONFIG = {
     "B R TOTTI LTDA (BW)": {"cnpj": "05221508000209", "aliq": 0.1132, "regime": "Lucro Presumido"}
 }
 
-# Lista de CNPJs cadastrados para rápida checagem
 CNPJS_GRUPO = [v["cnpj"] for v in EMPRESAS_CONFIG.values()]
 
-# --- BARRA LATERAL: UPLOAD E BOTÃO ---
+# --- BARRA LATERAL ---
 st.sidebar.header("📁 Importar Arquivos")
 arquivos_subidos = st.sidebar.file_uploader(
     "Suba o arquivo .ZIP baixado do Google Drive", 
@@ -45,7 +44,6 @@ def extrair_dados_xml(xml_content, nome_arquivo):
             total = inf_nfe.find('.//nfe:ICMSTot', ns)
             
             dt_emissao = ide.find('nfe:dhEmi', ns).text[:10] if (ide is not None and ide.find('nfe:dhEmi', ns) is not None) else ""
-            
             raz_emit = emit.find('nfe:xNome', ns).text if (emit is not None and emit.find('nfe:xNome', ns) is not None) else "Desconhecido"
             cnpj_emit = emit.find('nfe:CNPJ', ns).text if (emit is not None and emit.find('nfe:CNPJ', ns) is not None) else ""
             
@@ -54,7 +52,6 @@ def extrair_dados_xml(xml_content, nome_arquivo):
             
             v_nf = float(total.find('nfe:vNF', ns).text) if (total is not None and total.find('nfe:vNF', ns) is not None) else 0.0
             
-            # Identifica se é Venda ou Compra
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             tipo_operacao = "Venda (Saída)" if cnpj_emit_limpo in CNPJS_GRUPO else "Compra (Entrada)"
             
@@ -94,7 +91,7 @@ def ler_zip_recursivo(zip_bytes, nome_origem):
 # --- PROCESSAMENTO ---
 if btn_processar and arquivos_subidos:
     dados_nfs = []
-    with st.spinner("Analisando notas fiscais, operacoes de venda e compra..."):
+    with st.spinner("Analisando notas fiscais... Aguarde!"):
         for arq in arquivos_subidos:
             if arq.name.lower().endswith('.zip'):
                 dados_nfs.extend(ler_zip_recursivo(arq.read(), arq.name))
@@ -104,17 +101,18 @@ if btn_processar and arquivos_subidos:
                     dados_nfs.append(res)
 
     if dados_nfs:
-        st.session_state['df_nfs'] = pd.DataFrame(dados_nfs)
-        st.success(f"✅ Sucesso! {len(dados_nfs)} notas fiscais foram lidas e classificadas.")
+        df_temp = pd.DataFrame(dados_nfs)
+        df_temp['Data_Parsed'] = pd.to_datetime(df_temp['Data Emissão'], errors='coerce')
+        df_temp['Ano'] = df_temp['Data_Parsed'].dt.year
+        df_temp['Mês'] = df_temp['Data_Parsed'].dt.month
+        st.session_state['df_nfs'] = df_temp
+        st.success(f"✅ Sucesso! {len(dados_nfs)} notas fiscais foram lidas e processadas.")
     else:
         st.warning("⚠️ Nenhum arquivo XML válido foi encontrado no pacote enviado.")
 
-# --- EXIBIÇÃO E EXPORTAÇÃO ---
-if 'df_nfs' in st.session_state:
+# --- EXIBIÇÃO DOS RESULTADOS ---
+if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
     df_nfs = st.session_state['df_nfs']
-    df_nfs['Data_Parsed'] = pd.to_datetime(df_nfs['Data Emissão'], errors='coerce')
-    df_nfs['Ano'] = df_nfs['Data_Parsed'].dt.year
-    df_nfs['Mês'] = df_nfs['Data_Parsed'].dt.month
     
     anos_disp = sorted([int(a) for a in df_nfs['Ano'].dropna().unique()])
     
@@ -134,15 +132,15 @@ if 'df_nfs' in st.session_state:
     with tab1:
         df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mês'] == mes_sel)]
         
-        vendas_mes = df_mes[df_mes['Tipo Operação'] == "Venda (Saída)"]['Valor Total (R$)'].sum()
-        compras_mes = df_mes[df_mes['Tipo Operação'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
+        vendas_mes = df_mes[df_mes['Tipo Operação'] == "Venda (Saída)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
+        compras_mes = df_mes[df_mes['Tipo Operação'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
         resultado_mes = vendas_mes - compras_mes
         
-        # Cálculo do Imposto Estimado (Soma das alíquotas pelas vendas por emitente)
         imposto_mes = 0.0
-        for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-            sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['Emitente'].str.contains(emp_nome.split()[0], case=False, na=False))]['Valor Total (R$)'].sum()
-            imposto_mes += sub_vendas * emp_info['aliq']
+        if not df_mes.empty:
+            for emp_nome, emp_info in EMPRESAS_CONFIG.items():
+                sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['Emitente'].str.contains(emp_nome.split()[0], case=False, na=False))]['Valor Total (R$)'].sum()
+                imposto_mes += sub_vendas * emp_info['aliq']
 
         st.subheader(f"🔄 Balanço Mensal — {meses_dict[mes_sel]}/{ano_sel}")
         c1, c2, c3, c4 = st.columns(4)
@@ -153,7 +151,10 @@ if 'df_nfs' in st.session_state:
 
         st.markdown("---")
         st.subheader("📋 Detalhamento das Notas do Mês")
-        st.dataframe(df_mes[['Arquivo', 'Tipo Operação', 'Data Emissão', 'Emitente', 'Destinatário', 'Valor Total (R$)']], use_container_width=True)
+        if not df_mes.empty:
+            st.dataframe(df_mes[['Arquivo', 'Tipo Operação', 'Data Emissão', 'Emitente', 'Destinatário', 'Valor Total (R$)']], use_container_width=True)
+        else:
+            st.info("Nenhuma nota fiscal encontrada para o mês e ano selecionados.")
 
     # --- TAB 2: RESUMO ANUAL ---
     with tab2:
@@ -163,8 +164,8 @@ if 'df_nfs' in st.session_state:
         resumo_anual = []
         for m_num, m_nome in meses_dict.items():
             df_m = df_ano[df_ano['Mês'] == m_num]
-            v_vendas = df_m[df_m['Tipo Operação'] == "Venda (Saída)"]['Valor Total (R$)'].sum()
-            v_compras = df_m[df_m['Tipo Operação'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
+            v_vendas = df_m[df_m['Tipo Operação'] == "Venda (Saída)"]['Valor Total (R$)'].sum() if not df_m.empty else 0.0
+            v_compras = df_m[df_m['Tipo Operação'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_m.empty else 0.0
             
             resumo_anual.append({
                 "Mês": m_nome,
@@ -183,8 +184,10 @@ if 'df_nfs' in st.session_state:
         df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mês'] == mes_sel)]
         
         for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-            # Busca notas emitidas por esta empresa
-            sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['Emitente'].str.contains(emp_nome.split()[0], case=False, na=False))]['Valor Total (R$)'].sum()
+            sub_vendas = 0.0
+            if not df_mes.empty:
+                sub_vendas = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['Emitente'].str.contains(emp_nome.split()[0], case=False, na=False))]['Valor Total (R$)'].sum()
+            
             imposto_apurado = sub_vendas * emp_info['aliq']
             
             relatorio_fiscal.append({
@@ -196,4 +199,5 @@ if 'df_nfs' in st.session_state:
             })
             
         st.table(pd.DataFrame(relatorio_fiscal))
-        st.info("💡 **Dica de Conferência:** Compare o valor da coluna **'Imposto Apurado (Devido)'** com a soma da DAS / DARF de PIS, COFINS, IRPJ e CSLL efetivamente pagas no mês para identificar divergências.")
+else:
+    st.info("👈 Faça o upload do arquivo `.zip` e clique no botão **🚀 Processar Notas Fiscais** no menu lateral.")
