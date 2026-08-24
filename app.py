@@ -3,7 +3,6 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import os
 import gdown
-import zipfile
 
 st.set_page_config(page_title="Consolidação Grupo - NFs Google Drive", layout="wide")
 
@@ -13,7 +12,7 @@ st.caption("Sincronização direta com a pasta pública de XMLs do Google Drive"
 ID_PASTA_DRIVE = "1o9va-LV2UjCDIhasFuw8B_7E-Pef8Q5V"
 PASTA_LOCAL = "nfs_download"
 
-# --- FUNÇÃO PARA BAIXAR DA PASTA PÚBLICA DO DRIVE ---
+# --- FUNÇÃO CORRIGIDA PARA BAIXAR DA PASTA PÚBLICA DO DRIVE ---
 @st.cache_data(ttl=3600)
 def baixar_xmls_drive(folder_id):
     if not os.path.exists(PASTA_LOCAL):
@@ -21,8 +20,8 @@ def baixar_xmls_drive(folder_id):
         
     url_folder = f"https://drive.google.com/drive/folders/{folder_id}"
     try:
-        # Baixa o conteúdo da pasta do Drive diretamente
-        gdown.download_folder(url_folder, output=PASTA_LOCAL, quiet=True, remaining_ok=True)
+        # Chamada padronizada compatível com todas as versões do gdown
+        gdown.download_folder(url_folder, output=PASTA_LOCAL, quiet=True)
         return True
     except Exception as e:
         st.error(f"Erro ao acessar a pasta do Drive: {e}")
