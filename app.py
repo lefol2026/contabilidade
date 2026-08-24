@@ -1,87 +1,101 @@
 import streamlit as st
 import pandas as pd
+import requests
 
-# Configuração da página
-st.set_page_config(page_title="Consolidação Grupo E-commerce & Inteligência Fiscal", layout="wide")
+st.set_page_config(page_title="Consolidação Grupo & Integration Tiny ERP", layout="wide")
 
-st.title("📊 Consolidação Operacional & Inteligência Fiscal do Grupo")
-st.caption("Visão Integrada: RTX Imports, BRT Serviços, BRA, BG, MCR e Filiais")
+st.title("📊 Painel Consolidado - Tiny ERP & Inteligência Fiscal")
+st.caption("Consulção em Tempo Real: RTX Imports, BRA, BG e BW (B R Totti)")
 
-# --- SEÇÃO 1: ESTRUTURA E EMPRESAS DO GRUPO ---
-st.subheader("🏢 Estrutura Societária e Papéis Tributários")
+# --- CONFIGURAÇÃO DOS TOKENS DAS EMPRESAS ---
+EMPRESAS = {
+    "RTX IMPORTS (Importadora / Hub MG)": {
+        "token": "031d36f9e1eb45afbaec8c8a9ca7cd3d21d1974e49eed05e6c97613494175fee",
+        "aliq_imposto": 0.06,  # Estimativa ICMS TTS/MG + PIS/COFINS
+        "regime": "Lucro Presumido / TTS Importação"
+    },
+    "BRA ADESIVOS (M C R Totti LTDA)": {
+        "token": "028e0a127dd20018e5c58cd3deac3b1c52d008fc7556da907f4844f2b35f9014",
+        "aliq_imposto": 0.1132,  # PIS/COFINS (3.65%) + ICMS/Outros
+        "regime": "Lucro Presumido"
+    },
+    "BG ADESIVOS (BG Adesivos LTDA)": {
+        "token": "d8d3b4f28ffde1f20dfcc9351f70b02e3ba53537465c2bc43bb0821b442197fa",
+        "aliq_imposto": 0.1132,
+        "regime": "Lucro Presumido"
+    },
+    "BW ADESIVOS (B R Totti LTDA)": {
+        "token": "a38cdbdb2b01b3aec71a4392d9aea173926343db673d23c30261854e58d3e992",
+        "aliq_imposto": 0.1132,
+        "regime": "Lucro Presumido"
+    }
+}
 
-col_emp1, col_emp2, col_emp3 = st.columns(3)
+# --- FUNÇÃO DE CONSULTA NA API DO TINY ERP ---
+def consultar_tiny(token):
+    url = "https://api.tiny.com.br/api2/pedidos.pesquisa.php"
+    payload = {
+        'token': token,
+        'formato': 'json'
+    }
+    try:
+        response = requests.post(url, data=payload, timeout=10)
+        dados = response.json()
+        retorno = dados.get('retorno', {})
+        
+        if retorno.get('status') == 'OK':
+            pedidos = retorno.get('pedidos', [])
+            total_vendas = sum(float(p['pedido']['valor']) for p in pedidos if 'pedido' in p)
+            return {'status': '🟢 Conectado', 'qtd': len(pedidos), 'total': total_vendas, 'erro': None}
+        else:
+            erros = retorno.get('erros', [{}])
+            msg_erro = erros[0].get('erro', 'Erro desconhecido na API')
+            return {'status': '🔴 Erro na API', 'qtd': 0, 'total': 0.0, 'erro': msg_erro}
+    except Exception as e:
+        return {'status': '🔴 Erro Conexão', 'qtd': 0, 'total': 0.0, 'erro': str(e)}
 
-with col_emp1:
-    st.info("**RTX IMPORTS COMERCIAL LTDA**\n\n"
-            "- **CNPJ Matriz:** 55.175.101/0001-95 (Pouso Alegre/MG)\n"
-            "- **Regime:** Lucro Presumido / Real (TTS Importação MG)\n"
-            "- **Função:** Importação direta com diferimento de ICMS e distribuição *Intercompany*.")
+# --- PROCESSAMENTO DOS DADOS ---
+st.subheader("🔄 Faturamento & Apuração de Impostos (Base Tiny ERP)")
 
-with col_emp2:
-    st.warning("**BRT SERVIÇOS E COMÉRCIO LTDA**\n\n"
-               "- **CNPJ Matriz:** 48.768.390/0001-70 (Barueri/SP)\n"
-               "- **Regime:** Prestação de Serviços / Apoio\n"
-               "- **Função:** Centralização de Mão de Obra e Folha de Pagamento (Rateio de Custos).")
+resultados = []
+total_grupo_vendas = 0.0
+total_grupo_impostos = 0.0
 
-with col_emp3:
-    st.success("**BRA / BG / MCR ADESIVOS & FILIAIS**\n\n"
-               "- **CNPJs:** Matrizes e Filiais (SP/MG)\n"
-               "- **Regime:** Lucro Presumido / Real\n"
-               "- **Função:** Venda final no e-commerce/marketplaces e gestão de estoque avançado.")
+for nome_empresa, info in EMPRESAS.items():
+    res = consultar_tiny(info['token'])
+    vendas = res['total']
+    impostos = vendas * info['aliq_imposto']
+    
+    total_grupo_vendas += vendas
+    total_grupo_impostos += impostos
+    
+    resultados.append({
+        "Empresa": nome_empresa,
+        "Regime Fiscal": info['regime'],
+        "Status API": res['status'],
+        "Qtd Pedidos": res['qtd'],
+        "Faturamento Bruto": f"R$ {vendas:,.2f}",
+        "Impostos Est. a Apurar": f"R$ {impostos:,.2f}",
+        "Detalhes / Observações": res['erro'] if res['erro'] else "Dados sincronizados com sucesso"
+    })
+
+# MÉTIRCAS RESUMO DO GRUPO
+c1, c2, c3 = st.columns(3)
+c1.metric("Faturamento Consolidado do Grupo", f"R$ {total_grupo_vendas:,.2f}")
+c2.metric("Impostos Consolidados a Apurar", f"R$ {total_grupo_impostos:,.2f}")
+c3.metric("Empresas Conectadas", f"{len(EMPRESAS)} Unidades")
 
 st.markdown("---")
 
-# --- SEÇÃO 2: SIMULADOR DE OPERAÇÃO INTERCOMPANY & FLUXO FISCAL ---
-st.subheader("🔄 Módulo de Análise e Transfer Pricing Intercompany")
+# TABELA DETALHADA
+df_resultado = pd.DataFrame(resultados)
+st.dataframe(df_resultado, use_container_width=True)
 
-col_input1, col_input2, col_input3 = st.columns(3)
+# --- SEÇÃO DE REGULAMENTAÇÃO TRIBUTÁRIA E CPCS ---
+st.subheader("📋 Cruzamento Contábil e Regras de Compliance")
 
-with col_input1:
-    faturamento_rtx = st.number_input("Vendas/Transferências da RTX (R$)", value=500000.0, step=10000.0)
-with col_input2:
-    custo_folha_brt = st.number_input("Custo de Pessoal BRT Serviços (R$)", value=45000.0, step=5000.0)
-with col_input3:
-    margem_intercompany = st.slider("Margem de Lucro RTX para Distribuidoras (%)", 5, 30, 15)
-
-# Cálculos Simulados
-valor_venda_distribuidores = faturamento_rtx * (1 + (margem_intercompany / 100))
-economia_icms_tts = faturamento_rtx * 0.12  # Estimativa de diferimento/crédito presumido de ICMS no TTS MG
-
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-col_m1.metric("Importações / Vendas RTX", f"R$ {faturamento_rtx:,.2f}")
-col_m2.metric("Repasse Folha (BRT ➔ RTX)", f"R$ {custo_folha_brt:,.2f}")
-col_m3.metric("Faturamento Distribuidores", f"R$ {valor_venda_distribuidores:,.2f}")
-col_m4.metric("Ganho Estimado TTS MG (ICMS)", f"R$ {economia_icms_tts:,.2f}", delta="Diferimento Ativo")
-
-st.markdown("---")
-
-# --- SEÇÃO 3: AUDITORIA CONTÁBIL & CPCs ---
-st.subheader("🚨 Diagnósticos de Conformidade e Normas Contábeis (CPC / Reforma Tributária)")
-
-col_diag1, col_diag2 = st.columns(2)
-
-with col_diag1:
-    st.subheader("📌 Validação CPC 30 / NBC TG 47 (Receitas)")
-    st.write("""
-    - **Corte de Receita (Cut-off):** A receita das saídas da RTX para as distribuidoras só deve ser reconhecida no momento da **efetiva transferência de propriedade/saída física** do galpão de MG.
-    - **Vendas E-commerce (Cliente Final):** Vendas efetuadas nas pontas (BRA/BG/MCR) via marketplace devem ter a receita diferida até a entrega/postagem da mercadoria.
-    """)
-
-with col_diag2:
-    st.subheader("⚖️ Rateio Mão de Obra & Reforma Tributária (IBS/CBS)")
-    st.write("""
-    - **Reembolso BRT ➔ RTX:** O faturamento de serviços da BRT para a RTX deve ser estruturado como **reembolso de custos sem margem de lucro**, evitando incidência desnecessária de PIS/COFINS e ISS sobre a folha.
-    - **Atenção Reforma Tributária:** Com a transição do ICMS para o IBS/CBS, benefícios estaduais como o **TTS de Minas Gerais serão unificados**. O planejamento tributário do grupo deve focar em acúmulo de créditos na entrada.
-    """)
-
-# Tabela resumo de lançamentos simulados
-st.subheader("📋 Tabela Consolidada por Entidade")
-df_grupo = pd.DataFrame({
-    "Empresa": ["RTX Imports Comercial", "BRT Serviços e Comércio", "BRA / BG / MCR Adesivos"],
-    "Papel": ["Importadora / Hub MG", "Gestão de Pessoal / SP", "Vendas E-commerce / SP-MG"],
-    "Faturamento Estimado": [f"R$ {faturamento_rtx:,.2f}", f"R$ {custo_folha_brt:,.2f}", f"R$ {valor_venda_distribuidores:,.2f}"],
-    "Principais Impostos": ["ICMS (TTS MG), PIS/COFINS Monofásico", "INSS, FGTS, ISS (Prestação)", "ICMS Difal, PIS/COFINS, IRPJ/CSLL"]
-})
-
-st.table(df_grupo)
+st.markdown("""
+* **RTX Imports vs. Distribuidoras (Transfer Pricing):** Verificar a margem aplicada nas vendas intercompany para garantir conformidade com as regras de valoração aduaneira e diferimento de ICMS (TTS/MG).
+* **CPC 30 / NBC TG 47:** Garantir que o reconhecimento da receita nas empresas do e-commerce (BRA, BG e BW) coincida com o faturamento/saída informado nas notas fiscais do Tiny ERP.
+* **Segregação Monofásica (PIS/COFINS):** Validar se os produtos cadastrados no Tiny possuem o NCM e CST corretos para exclusão de PIS/COFINS nas saídas das distribuidoras.
+""")
