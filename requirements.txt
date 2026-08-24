@@ -1,3 +1,5 @@
 streamlit
 pandas
-protobuf
+requests
+gdown
+openpyxl
