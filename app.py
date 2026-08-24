@@ -55,7 +55,6 @@ EMPRESAS = {
     }
 }
 
-# --- FUNÇÃO DE CONSULTA DE VENDAS ---
 @st.cache_data(ttl=300)
 def consultar_vendas(token, d_inicio, d_fim):
     url = "https://api.tiny.com.br/api2/pedidos.pesquisa.php"
@@ -74,30 +73,40 @@ def consultar_vendas(token, d_inicio, d_fim):
     except Exception:
         return {'qtd': 0, 'total': 0.0}
 
-# --- FUNÇÃO DE CONSULTA DE NOTAS FISCAIS DE ENTRADA (COMPRAS/IMPORTAÇÃO) ---
 @st.cache_data(ttl=300)
-def consultar_notas_entrada(token, d_inicio, d_fim):
-    url = "https://api.tiny.com.br/api2/notas.fiscais.pesquisa.php"
-    payload = {
-        'token': token, 
-        'formato': 'json', 
-        'data_inicial': d_inicio, 
-        'data_final': d_fim,
-        'tipo': 'E'  # E = Entrada / Compras / Importação
-    }
+def consultar_compras_unificado(token, d_inicio, d_fim):
     headers = {'User-Agent': 'Mozilla/5.0'}
     
+    # Busca 1: Ordens de Compra (Suprimentos)
+    url_compras = "https://api.tiny.com.br/api2/notas.fiscais.compras.pesquisa.php"
+    payload1 = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim}
+    
+    total_compras = 0.0
+    qtd_compras = 0
+    
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=15)
-        dados = response.json()
-        retorno = dados.get('retorno', {})
-        if retorno.get('status') == 'OK':
-            notas = retorno.get('notas_fiscais', [])
-            total = sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
-            return {'qtd': len(notas), 'total': total}
-        return {'qtd': 0, 'total': 0.0}
+        res1 = requests.post(url_compras, data=payload1, headers=headers, timeout=10).json()
+        if res1.get('retorno', {}).get('status') == 'OK':
+            notas = res1['retorno'].get('notas_fiscais', [])
+            total_compras += sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
+            qtd_compras += len(notas)
     except Exception:
-        return {'qtd': 0, 'total': 0.0}
+        pass
+        
+    # Busca 2: Notas de Entrada (Tipo E)
+    url_entradas = "https://api.tiny.com.br/api2/notas.fiscais.pesquisa.php"
+    payload2 = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim, 'tipo': 'E'}
+    
+    try:
+        res2 = requests.post(url_entradas, data=payload2, headers=headers, timeout=10).json()
+        if res2.get('retorno', {}).get('status') == 'OK':
+            notas = res2['retorno'].get('notas_fiscais', [])
+            total_compras += sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
+            qtd_compras += len(notas)
+    except Exception:
+        pass
+
+    return {'qtd': qtd_compras, 'total': total_compras}
 
 # --- PROCESSAMENTO PRINCIPAL ---
 st.subheader(f"🔄 Balanço de Compras vs Vendas — {meses_dict[mes_selecionado]}/{ano_selecionado}")
@@ -111,7 +120,7 @@ for nome_empresa, info in EMPRESAS.items():
     res_vendas = consultar_vendas(info['token'], primeiro_dia, ultimo_dia)
     time.sleep(0.3)
     
-    res_compras = consultar_notas_entrada(info['token'], primeiro_dia, ultimo_dia)
+    res_compras = consultar_compras_unificado(info['token'], primeiro_dia, ultimo_dia)
     time.sleep(0.3)
     
     vendas = res_vendas['total']
@@ -125,7 +134,7 @@ for nome_empresa, info in EMPRESAS.items():
     resultados.append({
         "Empresa": nome_empresa,
         "Regime Fiscal": info['regime'],
-        "NFs Entrada": res_compras['qtd'],
+        "NFs Compras/Entrada": res_compras['qtd'],
         "Total Comprado (Entradas)": f"R$ {compras:,.2f}",
         "Qtd Vendas": res_vendas['qtd'],
         "Total Vendido (Saídas)": f"R$ {vendas:,.2f}",
