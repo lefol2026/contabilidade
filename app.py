@@ -1,22 +1,47 @@
 import streamlit as st
 import pandas as pd
 import requests
+import time
+from datetime import datetime
+import calendar
 
-st.set_page_config(page_title="Consolidação Grupo & Integration Tiny ERP", layout="wide")
+st.set_page_config(page_title="Consolidação Grupo & Tiny ERP", layout="wide")
 
-st.title("📊 Painel Consolidado - Tiny ERP & Inteligência Fiscal")
-st.caption("Consulção em Tempo Real: RTX Imports, BRA, BG e BW (B R Totti)")
+st.title("📊 Painel Consolidado - Compras, Vendas & Inteligência Fiscal")
+st.caption("Consulta em Tempo Real: RTX Imports, BRA, BG e BW (B R Totti)")
 
-# --- CONFIGURAÇÃO DOS TOKENS DAS EMPRESAS ---
+# --- BARRA LATERAL: FILTROS DE MÊS E ANO ---
+st.sidebar.header("📅 Filtro de Período")
+
+ano_atual = datetime.now().year
+mes_atual = datetime.now().month
+
+anos_disponiveis = list(range(2023, ano_atual + 1))
+meses_dict = {
+    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
+}
+
+ano_selecionado = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis, index=anos_disponiveis.index(ano_atual))
+mes_selecionado = st.sidebar.selectbox("Selecione o Mês", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], index=mes_atual - 1)
+
+primeiro_dia = f"01/{mes_selecionado:02d}/{ano_selecionado}"
+ultimo_dia_num = calendar.monthrange(ano_selecionado, mes_selecionado)[1]
+ultimo_dia = f"{ultimo_dia_num:02d}/{mes_selecionado:02d}/{ano_selecionado}"
+
+st.sidebar.info(f"📆 **Período Selecionado:**\n{primeiro_dia} até {ultimo_dia}")
+
+# --- CONFIGURAÇÃO DAS EMPRESAS ---
 EMPRESAS = {
     "RTX IMPORTS (Importadora / Hub MG)": {
         "token": "031d36f9e1eb45afbaec8c8a9ca7cd3d21d1974e49eed05e6c97613494175fee",
-        "aliq_imposto": 0.06,  # Estimativa ICMS TTS/MG + PIS/COFINS
+        "aliq_imposto": 0.06,
         "regime": "Lucro Presumido / TTS Importação"
     },
     "BRA ADESIVOS (M C R Totti LTDA)": {
         "token": "028e0a127dd20018e5c58cd3deac3b1c52d008fc7556da907f4844f2b35f9014",
-        "aliq_imposto": 0.1132,  # PIS/COFINS (3.65%) + ICMS/Outros
+        "aliq_imposto": 0.1132,
         "regime": "Lucro Presumido"
     },
     "BG ADESIVOS (BG Adesivos LTDA)": {
@@ -31,71 +56,87 @@ EMPRESAS = {
     }
 }
 
-# --- FUNÇÃO DE CONSULTA NA API DO TINY ERP ---
-def consultar_tiny(token):
+# --- FUNÇÃO DE CONSULTA DE VENDAS ---
+@st.cache_data(ttl=300)
+def consultar_vendas(token, d_inicio, d_fim):
     url = "https://api.tiny.com.br/api2/pedidos.pesquisa.php"
-    payload = {
-        'token': token,
-        'formato': 'json'
-    }
+    payload = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim}
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
     try:
-        response = requests.post(url, data=payload, timeout=10)
+        response = requests.post(url, data=payload, headers=headers, timeout=15)
         dados = response.json()
         retorno = dados.get('retorno', {})
-        
         if retorno.get('status') == 'OK':
             pedidos = retorno.get('pedidos', [])
-            total_vendas = sum(float(p['pedido']['valor']) for p in pedidos if 'pedido' in p)
-            return {'status': '🟢 Conectado', 'qtd': len(pedidos), 'total': total_vendas, 'erro': None}
-        else:
-            erros = retorno.get('erros', [{}])
-            msg_erro = erros[0].get('erro', 'Erro desconhecido na API')
-            return {'status': '🔴 Erro na API', 'qtd': 0, 'total': 0.0, 'erro': msg_erro}
-    except Exception as e:
-        return {'status': '🔴 Erro Conexão', 'qtd': 0, 'total': 0.0, 'erro': str(e)}
+            total = sum(float(p['pedido']['valor']) for p in pedidos if 'pedido' in p)
+            return {'qtd': len(pedidos), 'total': total}
+        return {'qtd': 0, 'total': 0.0}
+    except Exception:
+        return {'qtd': 0, 'total': 0.0}
 
-# --- PROCESSAMENTO DOS DADOS ---
-st.subheader("🔄 Faturamento & Apuração de Impostos (Base Tiny ERP)")
+# --- FUNÇÃO DE CONSULTA DE COMPRAS (NF ENTRADA) ---
+@st.cache_data(ttl=300)
+def consultar_compras(token, d_inicio, d_fim):
+    url = "https://api.tiny.com.br/api2/notas.fiscais.compras.pesquisa.php"
+    payload = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim}
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=15)
+        dados = response.json()
+        retorno = dados.get('retorno', {})
+        if retorno.get('status') == 'OK':
+            notas = retorno.get('notas_fiscais', [])
+            total = sum(float(n['nota_fiscal']['valor_nota']) for n in notas if 'nota_fiscal' in n)
+            return {'qtd': len(notas), 'total': total}
+        return {'qtd': 0, 'total': 0.0}
+    except Exception:
+        return {'qtd': 0, 'total': 0.0}
+
+# --- PROCESSAMENTO PRINCIPAL ---
+st.subheader(f"🔄 Balanço de Compras vs Vendas — {meses_dict[mes_selecionado]}/{ano_selecionado}")
 
 resultados = []
-total_grupo_vendas = 0.0
-total_grupo_impostos = 0.0
+total_vendas_grupo = 0.0
+total_compras_grupo = 0.0
+total_impostos_grupo = 0.0
 
 for nome_empresa, info in EMPRESAS.items():
-    res = consultar_tiny(info['token'])
-    vendas = res['total']
+    res_vendas = consultar_vendas(info['token'], primeiro_dia, ultimo_dia)
+    time.sleep(0.3)
+    
+    res_compras = consultar_compras(info['token'], primeiro_dia, ultimo_dia)
+    time.sleep(0.3)
+    
+    vendas = res_vendas['total']
+    compras = res_compras['total']
     impostos = vendas * info['aliq_imposto']
     
-    total_grupo_vendas += vendas
-    total_grupo_impostos += impostos
+    total_vendas_grupo += vendas
+    total_compras_grupo += compras
+    total_impostos_grupo += impostos
     
     resultados.append({
         "Empresa": nome_empresa,
         "Regime Fiscal": info['regime'],
-        "Status API": res['status'],
-        "Qtd Pedidos": res['qtd'],
-        "Faturamento Bruto": f"R$ {vendas:,.2f}",
-        "Impostos Est. a Apurar": f"R$ {impostos:,.2f}",
-        "Detalhes / Observações": res['erro'] if res['erro'] else "Dados sincronizados com sucesso"
+        "Qtd Compras": res_compras['qtd'],
+        "Total Comprado (Entradas)": f"R$ {compras:,.2f}",
+        "Qtd Vendas": res_vendas['qtd'],
+        "Total Vendido (Saídas)": f"R$ {vendas:,.2f}",
+        "Margem Bruta (Vendas - Compras)": f"R$ {(vendas - compras):,.2f}",
+        "Impostos Est.": f"R$ {impostos:,.2f}"
     })
 
-# MÉTIRCAS RESUMO DO GRUPO
-c1, c2, c3 = st.columns(3)
-c1.metric("Faturamento Consolidado do Grupo", f"R$ {total_grupo_vendas:,.2f}")
-c2.metric("Impostos Consolidados a Apurar", f"R$ {total_grupo_impostos:,.2f}")
-c3.metric("Empresas Conectadas", f"{len(EMPRESAS)} Unidades")
+# MÉTRICAS RESUMO DO GRUPO
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total Comprado / Importado", f"R$ {total_compras_grupo:,.2f}")
+c2.metric("Total Vendido (Faturamento)", f"R$ {total_vendas_grupo:,.2f}")
+c3.metric("Resultado Operacional do Grupo", f"R$ {(total_vendas_grupo - total_compras_grupo):,.2f}")
+c4.metric("Impostos Consolidados Est.", f"R$ {total_impostos_grupo:,.2f}")
 
 st.markdown("---")
 
 # TABELA DETALHADA
 df_resultado = pd.DataFrame(resultados)
 st.dataframe(df_resultado, use_container_width=True)
-
-# --- SEÇÃO DE REGULAMENTAÇÃO TRIBUTÁRIA E CPCS ---
-st.subheader("📋 Cruzamento Contábil e Regras de Compliance")
-
-st.markdown("""
-* **RTX Imports vs. Distribuidoras (Transfer Pricing):** Verificar a margem aplicada nas vendas intercompany para garantir conformidade com as regras de valoração aduaneira e diferimento de ICMS (TTS/MG).
-* **CPC 30 / NBC TG 47:** Garantir que o reconhecimento da receita nas empresas do e-commerce (BRA, BG e BW) coincida com o faturamento/saída informado nas notas fiscais do Tiny ERP.
-* **Segregação Monofásica (PIS/COFINS):** Validar se os produtos cadastrados no Tiny possuem o NCM e CST corretos para exclusão de PIS/COFINS nas saídas das distribuidoras.
-""")
