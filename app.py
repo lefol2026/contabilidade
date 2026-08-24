@@ -32,7 +32,6 @@ ultimo_dia = f"{ultimo_dia_num:02d}/{mes_selecionado:02d}/{ano_selecionado}"
 
 st.sidebar.info(f"📆 **Período Selecionado:**\n{primeiro_dia} até {ultimo_dia}")
 
-# --- CONFIGURAÇÃO DAS EMPRESAS ---
 EMPRESAS = {
     "RTX IMPORTS (Importadora / Hub MG)": {
         "token": "031d36f9e1eb45afbaec8c8a9ca7cd3d21d1974e49eed05e6c97613494175fee",
@@ -75,11 +74,17 @@ def consultar_vendas(token, d_inicio, d_fim):
     except Exception:
         return {'qtd': 0, 'total': 0.0}
 
-# --- FUNÇÃO DE CONSULTA DE COMPRAS (NF ENTRADA) ---
+# --- FUNÇÃO DE CONSULTA DE NOTAS FISCAIS DE ENTRADA (COMPRAS/IMPORTAÇÃO) ---
 @st.cache_data(ttl=300)
-def consultar_compras(token, d_inicio, d_fim):
-    url = "https://api.tiny.com.br/api2/notas.fiscais.compras.pesquisa.php"
-    payload = {'token': token, 'formato': 'json', 'data_inicial': d_inicio, 'data_final': d_fim}
+def consultar_notas_entrada(token, d_inicio, d_fim):
+    url = "https://api.tiny.com.br/api2/notas.fiscais.pesquisa.php"
+    payload = {
+        'token': token, 
+        'formato': 'json', 
+        'data_inicial': d_inicio, 
+        'data_final': d_fim,
+        'tipo': 'E'  # E = Entrada / Compras / Importação
+    }
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
@@ -106,7 +111,7 @@ for nome_empresa, info in EMPRESAS.items():
     res_vendas = consultar_vendas(info['token'], primeiro_dia, ultimo_dia)
     time.sleep(0.3)
     
-    res_compras = consultar_compras(info['token'], primeiro_dia, ultimo_dia)
+    res_compras = consultar_notas_entrada(info['token'], primeiro_dia, ultimo_dia)
     time.sleep(0.3)
     
     vendas = res_vendas['total']
@@ -120,23 +125,23 @@ for nome_empresa, info in EMPRESAS.items():
     resultados.append({
         "Empresa": nome_empresa,
         "Regime Fiscal": info['regime'],
-        "Qtd Compras": res_compras['qtd'],
+        "NFs Entrada": res_compras['qtd'],
         "Total Comprado (Entradas)": f"R$ {compras:,.2f}",
         "Qtd Vendas": res_vendas['qtd'],
         "Total Vendido (Saídas)": f"R$ {vendas:,.2f}",
-        "Margem Bruta (Vendas - Compras)": f"R$ {(vendas - compras):,.2f}",
+        "Resultado Bruto": f"R$ {(vendas - compras):,.2f}",
         "Impostos Est.": f"R$ {impostos:,.2f}"
     })
 
-# MÉTRICAS RESUMO DO GRUPO
+# MÉTRICAS RESUMO
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Comprado / Importado", f"R$ {total_compras_grupo:,.2f}")
-c2.metric("Total Vendido (Faturamento)", f"R$ {total_vendas_grupo:,.2f}")
-c3.metric("Resultado Operacional do Grupo", f"R$ {(total_vendas_grupo - total_compras_grupo):,.2f}")
+c1.metric("Total Entradas (Compras/DI)", f"R$ {total_compras_grupo:,.2f}")
+c2.metric("Total Saídas (Vendas)", f"R$ {total_vendas_grupo:,.2f}")
+c3.metric("Resultado Operacional", f"R$ {(total_vendas_grupo - total_compras_grupo):,.2f}")
 c4.metric("Impostos Consolidados Est.", f"R$ {total_impostos_grupo:,.2f}")
 
 st.markdown("---")
 
-# TABELA DETALHADA
+# TABELA
 df_resultado = pd.DataFrame(resultados)
 st.dataframe(df_resultado, use_container_width=True)
