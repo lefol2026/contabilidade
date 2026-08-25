@@ -8,39 +8,39 @@ import gc
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Filtro Ativo: Contabilização de Vendas Efetivas por CFOP (Exclui Remessas para Full)")
+st.caption("Versão Sem Filtro Bloqueante: Leitura Integral de Saídas e Vendas do Full")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 3, 5]
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 3, 5]
         "pis": 0.0065,         # PIS Cumulativo (0.65%)
         "cofins": 0.0300,      # COFINS Cumulativo (3.00%)
         "irpj": 0.0120,        # IRPJ Presumido (1.20%)
         "csll": 0.0108,        # CSLL Presumido (1.08%)
-        "regime": "TTS E-Commerce / Corredor Importacao"
+        "regime": "TTS E-Commerce / Corredor Importacao"[cite: 3, 5]
     },
     "MCRTOTTI LTDA / BRA": {
         "cnpjs": ["25958668000177", "05221508000128"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 1]
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 1]
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"
+        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 1]
     },
     "BR TOTTI LTDA / BW": {
         "cnpjs": ["23892392000146", "05221508000209"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 2]
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 2]
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"
+        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 2]
     },
     "BG ADESIVOS LTDA": {
         "cnpjs": ["05221462000124"],
@@ -55,7 +55,6 @@ EMPRESAS_CONFIG = {
 }
 
 ALL_CNPJS_GRUPO = set(cnpj for emp in EMPRESAS_CONFIG.values() for cnpj in emp["cnpjs"])
-CFOPS_VENDAS_VALIDOS = {'5101', '5102', '5103', '5104', '5403', '5405', '6101', '6102', '6103', '6104', '6403', '6404', '6107', '6108'}
 
 def extrair_dados_xml(xml_bytes, nome_arquivo):
     try:
@@ -124,27 +123,24 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             cnpj_dest_limpo = cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip()
             
+            # Sem trava por CFOP: Toda nota emitida por CNPJ do grupo é Venda (Saída)
             if cnpj_emit_limpo in ALL_CNPJS_GRUPO:
-                if cfop_nota in CFOPS_VENDAS_VALIDOS or cfop_nota == "N/A":
-                    tipo_operacao = "Venda (Saida)"
-                else:
-                    tipo_operacao = "Outras Saidas/Remessas"
+                tipo_operacao = "Venda (Saida)"
             else:
                 tipo_operacao = "Compra (Entrada)"
             
-            if tipo_operacao in ["Venda (Saida)", "Compra (Entrada)"]:
-                return {
-                    'Arquivo': str(nome_arquivo),
-                    'Tipo Operacao': tipo_operacao,
-                    'CNPJ Emitente': cnpj_emit_limpo,
-                    'Emitente': raz_emit,
-                    'CNPJ Destinatario': cnpj_dest_limpo,
-                    'Destinatario': raz_dest,
-                    'UF Destino': uf_dest.upper(),
-                    'Data Emissao': dt_emissao,
-                    'Valor Total (R$)': v_nf,
-                    'CFOP': cfop_nota
-                }
+            return {
+                'Arquivo': str(nome_arquivo),
+                'Tipo Operacao': tipo_operacao,
+                'CNPJ Emitente': cnpj_emit_limpo,
+                'Emitente': raz_emit,
+                'CNPJ Destinatario': cnpj_dest_limpo,
+                'Destinatario': raz_dest,
+                'UF Destino': uf_dest.upper(),
+                'Data Emissao': dt_emissao,
+                'Valor Total (R$)': v_nf,
+                'CFOP': cfop_nota
+            }
     except Exception:
         pass
     return None
@@ -198,7 +194,7 @@ if st.sidebar.button("🗑️ Limpar Historico Acumulado", key="btn_clear"):
 # --- PROCESSAMENTO PRINCIPAL ---
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Processando XMLs e validando CFOPs de vendas..."):
+    with st.spinner("⏳ Processando XMLs sem restrições..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -239,7 +235,6 @@ if btn_processar and arquivos_subidos:
 if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
     df_nfs = st.session_state['df_nfs']
     
-    # Trava de segurança para garantir a existência de todas as colunas
     colunas_obrigatorias = ['Arquivo', 'Tipo Operacao', 'CFOP', 'Data Emissao', 'Emitente', 'Destinatario', 'UF Destino', 'Valor Total (R$)']
     for col in colunas_obrigatorias:
         if col not in df_nfs.columns:
