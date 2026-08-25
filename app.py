@@ -8,7 +8,7 @@ import gc
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Versão Estável com Varredura Profunda e Apuração Completa IRPJ/CSLL/PIS/COFINS/ICMS")
+st.caption("Filtro Ativo: Contabilização de Vendas Efetivas por CFOP (Exclui Remessas para Full)")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
@@ -55,8 +55,8 @@ EMPRESAS_CONFIG = {
 }
 
 ALL_CNPJS_GRUPO = set(cnpj for emp in EMPRESAS_CONFIG.values() for cnpj in emp["cnpjs"])
+CFOPS_VENDAS_VALIDOS = {'5101', '5102', '5103', '5104', '5403', '5405', '6101', '6102', '6103', '6104', '6403', '6404', '6107', '6108'}
 
-# --- FUNÇÃO DE LEITURA E EXTRAÇÃO DE DADOS DE XML ---
 def extrair_dados_xml(xml_bytes, nome_arquivo):
     try:
         xml_str = xml_bytes.strip()
@@ -80,6 +80,7 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             raz_emit, cnpj_emit = "Desconhecido", ""
             raz_dest, cnpj_dest, uf_dest = "Consumidor Final", "", "MG"
             v_nf = 0.0
+            cfop_nota = ""
 
             for sub in inf_nfe:
                 tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
@@ -106,6 +107,13 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
                                 etag = ender_child.tag.split('}')[-1]
                                 if etag == 'UF' and ender_child.text: uf_dest = ender_child.text
                                 
+                elif tag == 'det':
+                    prod = sub.find('.//nfe:prod', ns) if sub.find('.//nfe:prod', ns) is not None else sub.find('.//prod')
+                    if prod is not None:
+                        elem_cfop = prod.find('nfe:cfop', ns) if prod.find('nfe:cfop', ns) is not None else prod.find('cfop')
+                        if elem_cfop is not None and elem_cfop.text:
+                            cfop_nota = elem_cfop.text.strip()
+
                 elif tag == 'total':
                     for child in sub.iter():
                         ctag = child.tag.split('}')[-1]
@@ -116,19 +124,29 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             cnpj_dest_limpo = cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip()
             
-            tipo_operacao = "Venda (Saida)" if cnpj_emit_limpo in ALL_CNPJS_GRUPO else "Compra (Entrada)"
+            # Identificacao de Venda vs Compra vs Remessa
+            if cnpj_emit_limpo in ALL_CNPJS_GRUPO:
+                if cfop_nota in CFOPS_VENDAS_VALIDOS or cfop_nota == "":
+                    tipo_operacao = "Venda (Saida)"
+                else:
+                    tipo_operacao = "Outras Saidas/Remessas"
+            else:
+                tipo_operacao = "Compra (Entrada)"
             
-            return {
-                'Arquivo': str(nome_arquivo),
-                'Tipo Operacao': tipo_operacao,
-                'CNPJ Emitente': cnpj_emit_limpo,
-                'Emitente': raz_emit,
-                'CNPJ Destinatario': cnpj_dest_limpo,
-                'Destinatario': raz_dest,
-                'UF Destino': uf_dest.upper(),
-                'Data Emissao': dt_emissao,
-                'Valor Total (R$)': v_nf
-            }
+            # Filtra apenas o que e Venda ou Compra para o Painel
+            if tipo_operacao in ["Venda (Saida)", "Compra (Entrada)"]:
+                return {
+                    'Arquivo': str(nome_arquivo),
+                    'Tipo Operacao': tipo_operacao,
+                    'CNPJ Emitente': cnpj_emit_limpo,
+                    'Emitente': raz_emit,
+                    'CNPJ Destinatario': cnpj_dest_limpo,
+                    'Destinatario': raz_dest,
+                    'UF Destino': uf_dest.upper(),
+                    'Data Emissao': dt_emissao,
+                    'Valor Total (R$)': v_nf,
+                    'CFOP': cfop_nota
+                }
     except Exception:
         pass
     return None
@@ -182,7 +200,7 @@ if st.sidebar.button("🗑️ Limpar Historico Acumulado", key="btn_clear"):
 # --- PROCESSAMENTO PRINCIPAL ---
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Efetuando varredura profunda de XMLs nos pacotes..."):
+    with st.spinner("⏳ Processando XMLs e validando CFOPs de vendas..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -277,7 +295,7 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         st.markdown("---")
         st.subheader("📋 Detalhamento das Notas do Mes")
         if not df_mes.empty:
-            st.dataframe(df_mes[['Arquivo', 'Tipo Operacao', 'Data Emissao', 'Emitente', 'Destinatario', 'UF Destino', 'Valor Total (R$)']], use_container_width=True)
+            st.dataframe(df_mes[['Arquivo', 'Tipo Operacao', 'CFOP', 'Data Emissao', 'Emitente', 'Destinatario', 'UF Destino', 'Valor Total (R$)']], use_container_width=True)
         else:
             st.info("Nenhuma nota fiscal encontrada para o mes e ano selecionados.")
 
