@@ -2,13 +2,14 @@ import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
 import zipfile
-import io
+import tempfile
+import os
 import gc
 
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Cálculo Detalhado de Impostos Federais (PIS/COFINS/IRPJ/CSLL) e Estaduais (TTS/MG)")
+st.caption("Processamento em Disco: Suporte para ZIPs grandes sem queda de memória RAM")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
@@ -117,45 +118,57 @@ def extrair_dados_xml(xml_stream, nome_arquivo):
         pass
     return None
 
-def processar_zip_obj(z_obj):
+def processar_zip_caminho(caminho_zip):
     dados = []
-    for info in z_obj.infolist():
-        if info.filename.startswith('__MACOSX') or info.is_dir():
-            continue
-            
-        fname_lower = info.filename.lower()
-        if fname_lower.endswith('.xml'):
-            try:
-                with z_obj.open(info) as xml_file:
-                    res = extrair_dados_xml(xml_file, info.filename.split('/')[-1])
-                    if res:
-                        dados.append(res)
-            except Exception:
-                pass
-        elif fname_lower.endswith('.zip'):
-            try:
-                sub_bytes = z_obj.read(info)
-                with zipfile.ZipFile(io.BytesIO(sub_bytes)) as sub_z:
-                    dados.extend(processar_zip_obj(sub_z))
-                del sub_bytes
-                gc.collect()
-            except Exception:
-                pass
+    try:
+        with zipfile.ZipFile(caminho_zip, 'r') as z:
+            for info in z.infolist():
+                if info.filename.startswith('__MACOSX') or info.is_dir():
+                    continue
+                
+                fname_lower = info.filename.lower()
+                if fname_lower.endswith('.xml'):
+                    try:
+                        with z.open(info) as xml_file:
+                            res = extrair_dados_xml(xml_file, info.filename.split('/')[-1])
+                            if res:
+                                dados.append(res)
+                    except Exception:
+                        pass
+                elif fname_lower.endswith('.zip'):
+                    try:
+                        # Para sub-ZIPs, extrai para um arquivo temporário secundário
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_sub:
+                            tmp_sub.write(z.read(info))
+                            tmp_sub_path = tmp_sub.name
+                        
+                        dados.extend(processar_zip_caminho(tmp_sub_path))
+                        os.remove(tmp_sub_path)
+                        gc.collect()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     return dados
 
 # --- PROCESSAMENTO ---
 if btn_processar and arquivos_subidos:
     status_container = st.empty()
-    status_container.info("⏳ Processando arquivos com apuração tributária de MG...")
+    status_container.info("⏳ Processando via disco temporário para evitar estouro de memória RAM...")
     
     novos_dados = []
     for arq in arquivos_subidos:
         if arq.name.lower().endswith('.zip'):
             try:
-                with zipfile.ZipFile(arq) as z:
-                    novos_dados.extend(processar_zip_obj(z))
+                # Salva o ZIP recebido em disco temporário
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
+                    tmp_file.write(arq.getbuffer())
+                    tmp_path = tmp_file.name
+                
+                novos_dados.extend(processar_zip_caminho(tmp_path))
+                os.remove(tmp_path)
             except Exception as e:
-                st.error(f"Erro ao ler {arq.name}: {e}")
+                st.error(f"Erro ao processar {arq.name}: {e}")
         elif arq.name.lower().endswith('.xml'):
             res = extrair_dados_xml(arq, arq.name)
             if res:
@@ -293,6 +306,5 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
             })
             
         st.table(pd.DataFrame(relatorio_fiscal))
-        st.info("💡 **Conferência das Guia DARF/DAPI:** Compare a coluna **PIS** com a DARF código 8109, **COFINS** com a DARF 2172 e **ICMS TTS** com a DAPI receita 218-8.")
 else:
     st.info("👈 Faça o upload dos arquivos `.zip` ou `.xml` e clique em **➕ Adicionar/Processar Notas**.")
