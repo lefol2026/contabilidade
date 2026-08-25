@@ -8,7 +8,7 @@ import gc
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Versão Estável com Varredura Profunda de XMLs")
+st.caption("Versão Estável com Varredura Profunda e Apuração Completa IRPJ/CSLL/PIS/COFINS/ICMS")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
@@ -243,11 +243,11 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mes'] == mes_sel)]
         vendas_mes = df_mes[df_mes['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
         compras_mes = df_mes[df_mes['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
-        resultado_mes = vendas_mes - compras_mes
         
         imposto_total_mes = 0.0
-        pis_total = 0.0
-        cofins_total = 0.0
+        piscofins_total = 0.0
+        irpjcsll_total = 0.0
+        icms_total = 0.0
         
         if not df_mes.empty:
             for emp_nome, emp_info in EMPRESAS_CONFIG.items():
@@ -258,18 +258,21 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
                 icms = (vendas_int * emp_info['icms_int']) + (vendas_ext * emp_info['icms_ext'])
                 pis = v_total_emp * emp_info['pis']
                 cofins = v_total_emp * emp_info['cofins']
-                irpj_csll = v_total_emp * (emp_info['irpj'] + emp_info['csll'])
+                irpj = v_total_emp * emp_info['irpj']
+                csll = v_total_emp * emp_info['csll']
                 
-                pis_total += pis
-                cofins_total += cofins
-                imposto_total_mes += (icms + pis + cofins + irpj_csll)
+                icms_total += icms
+                piscofins_total += (pis + cofins)
+                irpjcsll_total += (irpj + csll)
+                imposto_total_mes += (icms + pis + cofins + irpj + csll)
 
         st.subheader(f"🔄 Balanco Mensal — {meses_dict[mes_sel]}/{ano_sel}")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Vendas Totais (Saidas)", f"R$ {vendas_mes:,.2f}")
-        c2.metric("PIS Apurado (0.65%)", f"R$ {pis_total:,.2f}")
-        c3.metric("COFINS Apurado (3.00%)", f"R$ {cofins_total:,.2f}")
-        c4.metric("Imposto Total Devido", f"R$ {imposto_total_mes:,.2f}")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Vendas Totais", f"R$ {vendas_mes:,.2f}")
+        c2.metric("ICMS TTS (MG)", f"R$ {icms_total:,.2f}")
+        c3.metric("PIS/COFINS (3.65%)", f"R$ {piscofins_total:,.2f}")
+        c4.metric("IRPJ/CSLL (2.28%)", f"R$ {irpjcsll_total:,.2f}")
+        c5.metric("Total Devido", f"R$ {imposto_total_mes:,.2f}")
 
         st.markdown("---")
         st.subheader("📋 Detalhamento das Notas do Mes")
@@ -323,10 +326,8 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
                 "Empresa": emp_nome,
                 "Faturamento": f"R$ {v_total:,.2f}",
                 "ICMS TTS (MG)": f"R$ {icms_devido:,.2f}",
-                "PIS (0.65%)": f"R$ {pis_devido:,.2f}",
-                "COFINS (3.00%)": f"R$ {cofins_devido:,.2f}",
-                "IRPJ (1.20%)": f"R$ {irpj_devido:,.2f}",
-                "CSLL (1.08%)": f"R$ {csll_devido:,.2f}",
+                "PIS/COFINS (3.65%)": f"R$ {(pis_devido + cofins_devido):,.2f}",
+                "IRPJ/CSLL (2.28%)": f"R$ {(irpj_devido + csll_devido):,.2f}",
                 "Total Impostos": f"R$ {total_devido:,.2f}"
             })
             
