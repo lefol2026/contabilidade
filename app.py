@@ -8,39 +8,39 @@ import gc
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Versão Otimizada com Proteção de Memória e Estabilidade Tributária")
+st.caption("Versão Otimizada com Varredura Profunda de Pastas do Google Drive")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 3, 5]
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 3, 5]
         "pis": 0.0065,         # PIS Cumulativo (0.65%)
         "cofins": 0.0300,      # COFINS Cumulativo (3.00%)
         "irpj": 0.0120,        # IRPJ Presumido (1.20%)
         "csll": 0.0108,        # CSLL Presumido (1.08%)
-        "regime": "TTS E-Commerce / Corredor Importação"
+        "regime": "TTS E-Commerce / Corredor Importação"[cite: 3, 5]
     },
     "MCRTOTTI LTDA / BRA": {
         "cnpjs": ["25958668000177", "05221508000128"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 1]
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 1]
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"
+        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 1]
     },
     "BR TOTTI LTDA / BW": {
         "cnpjs": ["23892392000146", "05221508000209"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 2]
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 2]
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"
+        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 2]
     },
     "BG ADESIVOS LTDA": {
         "cnpjs": ["05221462000124"],
@@ -56,62 +56,75 @@ EMPRESAS_CONFIG = {
 
 ALL_CNPJS_GRUPO = set(cnpj for emp in EMPRESAS_CONFIG.values() for cnpj in emp["cnpjs"])
 
-# --- FUNÇÃO DE LEITURA OTIMIZADA DE XML ---
-def extrair_dados_xml(xml_content, nome_arquivo):
+# --- FUNÇÃO DE LEITURA E EXTRAÇÃO DE DADOS DE XML ---
+def extrair_dados_xml(xml_bytes, nome_arquivo):
     try:
-        context = ET.iterparse(io.BytesIO(xml_content), events=('end',))
-        _, root = next(context)
+        # Tenta decodificar o conteúdo para string/stream limpo
+        xml_str = xml_bytes.strip()
+        if not xml_str.startswith(b'<'):
+            # Ignora arquivos que não sejam estruturas XML
+            return None
+            
+        root = ET.fromstring(xml_str)
         
+        # Trata namespaces do portal fiscal
         ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
         
         inf_nfe = root.find('.//nfe:infNFe', ns)
         if inf_nfe is None:
             inf_nfe = root.find('.//{http://www.portalfiscal.inf.br/nfe}infNFe')
-            
+        if inf_nfe is None:
+            # Busca genérica sem namespace
+            for elem in root.iter():
+                if elem.tag.endswith('infNFe'):
+                    inf_nfe = elem
+                    break
+
         if inf_nfe is not None:
-            ide = inf_nfe.find('nfe:ide', ns) if inf_nfe.find('nfe:ide', ns) is not None else inf_nfe.find('{http://www.portalfiscal.inf.br/nfe}ide')
-            emit = inf_nfe.find('nfe:emit', ns) if inf_nfe.find('nfe:emit', ns) is not None else inf_nfe.find('{http://www.portalfiscal.inf.br/nfe}emit')
-            dest = inf_nfe.find('nfe:dest', ns) if inf_nfe.find('nfe:dest', ns) is not None else inf_nfe.find('{http://www.portalfiscal.inf.br/nfe}dest')
-            total = inf_nfe.find('.//nfe:ICMSTot', ns) if inf_nfe.find('.//nfe:ICMSTot', ns) is not None else inf_nfe.find('.//{http://www.portalfiscal.inf.br/nfe}ICMSTot')
-            
             dt_emissao = ""
-            if ide is not None:
-                elem_dhemi = ide.find('nfe:dhEmi', ns) if ide.find('nfe:dhEmi', ns) is not None else ide.find('{http://www.portalfiscal.inf.br/nfe}dhEmi')
-                if elem_dhemi is not None and elem_dhemi.text:
-                    dt_emissao = elem_dhemi.text[:10]
-
             raz_emit, cnpj_emit = "Desconhecido", ""
-            if emit is not None:
-                e_nome = emit.find('nfe:xNome', ns) if emit.find('nfe:xNome', ns) is not None else emit.find('{http://www.portalfiscal.inf.br/nfe}xNome')
-                e_cnpj = emit.find('nfe:CNPJ', ns) if emit.find('nfe:CNPJ', ns) is not None else emit.find('{http://www.portalfiscal.inf.br/nfe}CNPJ')
-                if e_nome is not None and e_nome.text: raz_emit = e_nome.text
-                if e_cnpj is not None and e_cnpj.text: cnpj_emit = e_cnpj.text
-
             raz_dest, cnpj_dest, uf_dest = "Consumidor Final", "", "MG"
-            if dest is not None:
-                d_nome = dest.find('nfe:xNome', ns) if dest.find('nfe:xNome', ns) is not None else dest.find('{http://www.portalfiscal.inf.br/nfe}xNome')
-                d_cnpj = dest.find('nfe:CNPJ', ns) if dest.find('nfe:CNPJ', ns) is not None else dest.find('{http://www.portalfiscal.inf.br/nfe}CNPJ')
-                ender = dest.find('nfe:enderDest', ns) if dest.find('nfe:enderDest', ns) is not None else dest.find('{http://www.portalfiscal.inf.br/nfe}enderDest')
-                
-                if d_nome is not None and d_nome.text: raz_dest = d_nome.text
-                if d_cnpj is not None and d_cnpj.text: cnpj_dest = d_cnpj.text
-                if ender is not None:
-                    d_uf = ender.find('nfe:UF', ns) if ender.find('nfe:UF', ns) is not None else ender.find('{http://www.portalfiscal.inf.br/nfe}UF')
-                    if d_uf is not None and d_uf.text: uf_dest = d_uf.text
-
             v_nf = 0.0
-            if total is not None:
-                e_vnf = total.find('nfe:vNF', ns) if total.find('nfe:vNF', ns) is not None else total.find('{http://www.portalfiscal.inf.br/nfe}vNF')
-                if e_vnf is not None and e_vnf.text:
-                    try: v_nf = float(e_vnf.text)
-                    except: v_nf = 0.0
+
+            # Iteração nos elementos do XML
+            for sub in inf_nfe:
+                tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
+                
+                if tag == 'ide':
+                    for child in sub:
+                        ctag = child.tag.split('}')[-1]
+                        if ctag in ['dhEmi', 'dEmi'] and child.text:
+                            dt_emissao = child.text[:10]
+                            
+                elif tag == 'emit':
+                    for child in sub:
+                        ctag = child.tag.split('}')[-1]
+                        if ctag == 'xNome' and child.text: raz_emit = child.text
+                        elif ctag == 'CNPJ' and child.text: cnpj_emit = child.text
+                        
+                elif tag == 'dest':
+                    for child in sub:
+                        ctag = child.tag.split('}')[-1]
+                        if ctag == 'xNome' and child.text: raz_dest = child.text
+                        elif ctag == 'CNPJ' and child.text: cnpj_dest = child.text
+                        elif ctag == 'enderDest':
+                            for ender_child in child:
+                                etag = ender_child.tag.split('}')[-1]
+                                if etag == 'UF' and ender_child.text: uf_dest = ender_child.text
+                                
+                elif tag == 'total':
+                    for child in sub.iter():
+                        ctag = child.tag.split('}')[-1]
+                        if ctag == 'vNF' and child.text:
+                            try: v_nf = float(child.text)
+                            except: v_nf = 0.0
 
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             cnpj_dest_limpo = cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip()
             
             tipo_operacao = "Venda (Saída)" if cnpj_emit_limpo in ALL_CNPJS_GRUPO else "Compra (Entrada)"
             
-            res = {
+            return {
                 'Arquivo': str(nome_arquivo),
                 'Tipo Operação': tipo_operacao,
                 'CNPJ Emitente': cnpj_emit_limpo,
@@ -122,8 +135,6 @@ def extrair_dados_xml(xml_content, nome_arquivo):
                 'Data Emissão': dt_emissao,
                 'Valor Total (R$)': v_nf
             }
-            root.clear()
-            return res
     except Exception:
         pass
     return None
@@ -137,20 +148,25 @@ def processar_zip_recursivo(zip_bytes):
                     continue
                 
                 fname_lower = info.filename.lower()
-                if fname_lower.endswith('.xml'):
+                
+                # Processa arquivos com extensão XML ou arquivos sem extensão vindos do Drive
+                if fname_lower.endswith('.xml') or (not '.' in fname_lower.split('/')[-1] and not fname_lower.endswith('/')):
                     try:
                         content = z.read(info)
                         res = extrair_dados_xml(content, info.filename.split('/')[-1])
-                        if res: dados.append(res)
+                        if res: 
+                            dados.append(res)
                         del content
                     except: pass
-                elif fname_lower.endswith('.zip'):
+                # Processa sub-pacotes compactados
+                elif fname_lower.endswith('.zip') or fname_lower.endswith('.rar'):
                     try:
                         sub_bytes = z.read(info)
                         dados.extend(processar_zip_recursivo(sub_bytes))
                         del sub_bytes
                     except: pass
-    except: pass
+    except Exception:
+        pass
     return dados
 
 # --- INTERFACE E BARRA LATERAL ---
@@ -174,7 +190,7 @@ if st.sidebar.button("🗑️ Limpar Histórico Acumulado", key="btn_clear"):
 # --- PROCESSAMENTO PRINCIPAL ---
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Lendo e extraindo notas fiscais com otimização de memória..."):
+    with st.spinner("⏳ Efetuando varredura profunda de XMLs nos pacotes..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -206,7 +222,7 @@ if btn_processar and arquivos_subidos:
         else:
             st.session_state['df_nfs'] = df_novos
 
-        st.success(f"✅ Processadas {len(novos_dados)} notas com sucesso!")
+        st.success(f"✅ Processadas {len(novos_dados)} notas fiscais com sucesso!")
         gc.collect()
     else:
         st.warning("⚠️ Nenhum XML de NF-e válido foi extraído dos arquivos.")
