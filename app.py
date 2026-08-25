@@ -80,7 +80,7 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             raz_emit, cnpj_emit = "Desconhecido", ""
             raz_dest, cnpj_dest, uf_dest = "Consumidor Final", "", "MG"
             v_nf = 0.0
-            cfop_nota = ""
+            cfop_nota = "N/A"
 
             for sub in inf_nfe:
                 tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
@@ -124,16 +124,14 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             cnpj_dest_limpo = cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip()
             
-            # Identificacao de Venda vs Compra vs Remessa
             if cnpj_emit_limpo in ALL_CNPJS_GRUPO:
-                if cfop_nota in CFOPS_VENDAS_VALIDOS or cfop_nota == "":
+                if cfop_nota in CFOPS_VENDAS_VALIDOS or cfop_nota == "N/A":
                     tipo_operacao = "Venda (Saida)"
                 else:
                     tipo_operacao = "Outras Saidas/Remessas"
             else:
                 tipo_operacao = "Compra (Entrada)"
             
-            # Filtra apenas o que e Venda ou Compra para o Painel
             if tipo_operacao in ["Venda (Saida)", "Compra (Entrada)"]:
                 return {
                     'Arquivo': str(nome_arquivo),
@@ -241,6 +239,12 @@ if btn_processar and arquivos_subidos:
 if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
     df_nfs = st.session_state['df_nfs']
     
+    # Trava de segurança para garantir a existência de todas as colunas
+    colunas_obrigatorias = ['Arquivo', 'Tipo Operacao', 'CFOP', 'Data Emissao', 'Emitente', 'Destinatario', 'UF Destino', 'Valor Total (R$)']
+    for col in colunas_obrigatorias:
+        if col not in df_nfs.columns:
+            df_nfs[col] = "N/A"
+    
     st.info(f"📌 **Total Acumulado:** {len(df_nfs)} Notas Fiscais salvas na memoria.")
 
     anos_disp = sorted([int(a) for a in df_nfs['Ano'].dropna().unique()])
@@ -295,7 +299,7 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         st.markdown("---")
         st.subheader("📋 Detalhamento das Notas do Mes")
         if not df_mes.empty:
-            st.dataframe(df_mes[['Arquivo', 'Tipo Operacao', 'CFOP', 'Data Emissao', 'Emitente', 'Destinatario', 'UF Destino', 'Valor Total (R$)']], use_container_width=True)
+            st.dataframe(df_mes[colunas_obrigatorias], use_container_width=True)
         else:
             st.info("Nenhuma nota fiscal encontrada para o mes e ano selecionados.")
 
