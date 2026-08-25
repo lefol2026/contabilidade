@@ -8,39 +8,39 @@ import gc
 st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
 
 st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Versão Otimizada com Varredura Profunda de Pastas do Google Drive")
+st.caption("Versão Estável com Varredura Profunda de XMLs")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 3, 5]
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 3, 5]
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
         "pis": 0.0065,         # PIS Cumulativo (0.65%)
         "cofins": 0.0300,      # COFINS Cumulativo (3.00%)
         "irpj": 0.0120,        # IRPJ Presumido (1.20%)
         "csll": 0.0108,        # CSLL Presumido (1.08%)
-        "regime": "TTS E-Commerce / Corredor Importação"[cite: 3, 5]
+        "regime": "TTS E-Commerce / Corredor Importacao"
     },
     "MCRTOTTI LTDA / BRA": {
         "cnpjs": ["25958668000177", "05221508000128"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 1]
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 1]
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 1]
+        "regime": "TTS E-Commerce / Lucro Presumido"
     },
     "BR TOTTI LTDA / BW": {
         "cnpjs": ["23892392000146", "05221508000209"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 2]
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 2]
+        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)
+        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 2]
+        "regime": "TTS E-Commerce / Lucro Presumido"
     },
     "BG ADESIVOS LTDA": {
         "cnpjs": ["05221462000124"],
@@ -50,7 +50,7 @@ EMPRESAS_CONFIG = {
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "Lucro Presumido Padrão"
+        "regime": "Lucro Presumido Padrao"
     }
 }
 
@@ -59,22 +59,17 @@ ALL_CNPJS_GRUPO = set(cnpj for emp in EMPRESAS_CONFIG.values() for cnpj in emp["
 # --- FUNÇÃO DE LEITURA E EXTRAÇÃO DE DADOS DE XML ---
 def extrair_dados_xml(xml_bytes, nome_arquivo):
     try:
-        # Tenta decodificar o conteúdo para string/stream limpo
         xml_str = xml_bytes.strip()
         if not xml_str.startswith(b'<'):
-            # Ignora arquivos que não sejam estruturas XML
             return None
             
         root = ET.fromstring(xml_str)
-        
-        # Trata namespaces do portal fiscal
         ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
         
         inf_nfe = root.find('.//nfe:infNFe', ns)
         if inf_nfe is None:
             inf_nfe = root.find('.//{http://www.portalfiscal.inf.br/nfe}infNFe')
         if inf_nfe is None:
-            # Busca genérica sem namespace
             for elem in root.iter():
                 if elem.tag.endswith('infNFe'):
                     inf_nfe = elem
@@ -86,7 +81,6 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             raz_dest, cnpj_dest, uf_dest = "Consumidor Final", "", "MG"
             v_nf = 0.0
 
-            # Iteração nos elementos do XML
             for sub in inf_nfe:
                 tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
                 
@@ -122,17 +116,17 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             cnpj_dest_limpo = cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip()
             
-            tipo_operacao = "Venda (Saída)" if cnpj_emit_limpo in ALL_CNPJS_GRUPO else "Compra (Entrada)"
+            tipo_operacao = "Venda (Saida)" if cnpj_emit_limpo in ALL_CNPJS_GRUPO else "Compra (Entrada)"
             
             return {
                 'Arquivo': str(nome_arquivo),
-                'Tipo Operação': tipo_operacao,
+                'Tipo Operacao': tipo_operacao,
                 'CNPJ Emitente': cnpj_emit_limpo,
                 'Emitente': raz_emit,
-                'CNPJ Destinatário': cnpj_dest_limpo,
-                'Destinatário': raz_dest,
+                'CNPJ Destinatario': cnpj_dest_limpo,
+                'Destinatario': raz_dest,
                 'UF Destino': uf_dest.upper(),
-                'Data Emissão': dt_emissao,
+                'Data Emissao': dt_emissao,
                 'Valor Total (R$)': v_nf
             }
     except Exception:
@@ -149,7 +143,6 @@ def processar_zip_recursivo(zip_bytes):
                 
                 fname_lower = info.filename.lower()
                 
-                # Processa arquivos com extensão XML ou arquivos sem extensão vindos do Drive
                 if fname_lower.endswith('.xml') or (not '.' in fname_lower.split('/')[-1] and not fname_lower.endswith('/')):
                     try:
                         content = z.read(info)
@@ -158,7 +151,6 @@ def processar_zip_recursivo(zip_bytes):
                             dados.append(res)
                         del content
                     except: pass
-                # Processa sub-pacotes compactados
                 elif fname_lower.endswith('.zip') or fname_lower.endswith('.rar'):
                     try:
                         sub_bytes = z.read(info)
@@ -181,10 +173,10 @@ arquivos_subidos = st.sidebar.file_uploader(
 st.sidebar.markdown("---")
 btn_processar = st.sidebar.button("➕ Adicionar/Processar Notas", type="primary", key="btn_proc")
 
-if st.sidebar.button("🗑️ Limpar Histórico Acumulado", key="btn_clear"):
+if st.sidebar.button("🗑️ Limpar Historico Acumulado", key="btn_clear"):
     if 'df_nfs' in st.session_state:
         del st.session_state['df_nfs']
-    st.sidebar.success("Histórico apagado!")
+    st.sidebar.success("Historico apagado!")
     st.rerun()
 
 # --- PROCESSAMENTO PRINCIPAL ---
@@ -206,17 +198,17 @@ if btn_processar and arquivos_subidos:
 
     if novos_dados:
         df_novos = pd.DataFrame(novos_dados)
-        df_novos['Data_Parsed'] = pd.to_datetime(df_novos['Data Emissão'], errors='coerce')
+        df_novos['Data_Parsed'] = pd.to_datetime(df_novos['Data Emissao'], errors='coerce')
         df_novos['Ano'] = df_novos['Data_Parsed'].dt.year
-        df_novos['Mês'] = df_novos['Data_Parsed'].dt.month
+        df_novos['Mes'] = df_novos['Data_Parsed'].dt.month
         
-        df_novos['Tipo Operação'] = df_novos['Tipo Operação'].astype('category')
+        df_novos['Tipo Operacao'] = df_novos['Tipo Operacao'].astype('category')
         df_novos['UF Destino'] = df_novos['UF Destino'].astype('category')
 
         if 'df_nfs' in st.session_state:
             df_existente = st.session_state['df_nfs']
             df_combinado = pd.concat([df_existente, df_novos], ignore_index=True).drop_duplicates(
-                subset=['Arquivo', 'Valor Total (R$)', 'Data Emissão']
+                subset=['Arquivo', 'Valor Total (R$)', 'Data Emissao']
             )
             st.session_state['df_nfs'] = df_combinado
         else:
@@ -225,32 +217,32 @@ if btn_processar and arquivos_subidos:
         st.success(f"✅ Processadas {len(novos_dados)} notas fiscais com sucesso!")
         gc.collect()
     else:
-        st.warning("⚠️ Nenhum XML de NF-e válido foi extraído dos arquivos.")
+        st.warning("⚠️ Nenhum XML de NF-e valido foi extraido dos arquivos.")
 
 # --- EXIBIÇÃO DO PAINEL DE DADOS ---
 if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
     df_nfs = st.session_state['df_nfs']
     
-    st.info(f"📌 **Total Acumulado:** {len(df_nfs)} Notas Fiscais salvas na memória.")
+    st.info(f"📌 **Total Acumulado:** {len(df_nfs)} Notas Fiscais salvas na memoria.")
 
     anos_disp = sorted([int(a) for a in df_nfs['Ano'].dropna().unique()])
     
-    st.sidebar.header("📅 Filtro de Período")
+    st.sidebar.header("📅 Filtro de Periodo")
     ano_sel = st.sidebar.selectbox("Selecione o Ano", anos_disp, index=len(anos_disp)-1 if anos_disp else 0, key="sel_ano")
     
     meses_dict = {
-        1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+        1: "Janeiro", 2: "Fevereiro", 3: "Marco", 4: "Abril",
         5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
         9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
     }
-    mes_sel = st.sidebar.selectbox("Selecione o Mês", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], key="sel_mes")
+    mes_sel = st.sidebar.selectbox("Selecione o Mes", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], key="sel_mes")
 
-    tab1, tab2, tab3 = st.tabs(["📅 Visão Mensal", "📊 Resumo Anual", "📑 Apuração Fiscal RET/TTS"])
+    tab1, tab2, tab3 = st.tabs(["📅 Visao Mensal", "📊 Resumo Anual", "📑 Apuracao Fiscal RET/TTS"])
 
     with tab1:
-        df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mês'] == mes_sel)]
-        vendas_mes = df_mes[df_mes['Tipo Operação'] == "Venda (Saída)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
-        compras_mes = df_mes[df_mes['Tipo Operação'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
+        df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mes'] == mes_sel)]
+        vendas_mes = df_mes[df_mes['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
+        compras_mes = df_mes[df_mes['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
         resultado_mes = vendas_mes - compras_mes
         
         imposto_total_mes = 0.0
@@ -259,8 +251,8 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         
         if not df_mes.empty:
             for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-                vendas_int = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] == 'MG')]['Valor Total (R$)'].sum()
-                vendas_ext = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] != 'MG')]['Valor Total (R$)'].sum()
+                vendas_int = df_mes[(df_mes['Tipo Operacao'] == "Venda (Saida)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] == 'MG')]['Valor Total (R$)'].sum()
+                vendas_ext = df_mes[(df_mes['Tipo Operacao'] == "Venda (Saida)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] != 'MG')]['Valor Total (R$)'].sum()
                 v_total_emp = vendas_int + vendas_ext
                 
                 icms = (vendas_int * emp_info['icms_int']) + (vendas_ext * emp_info['icms_ext'])
@@ -272,33 +264,33 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
                 cofins_total += cofins
                 imposto_total_mes += (icms + pis + cofins + irpj_csll)
 
-        st.subheader(f"🔄 Balanço Mensal — {meses_dict[mes_sel]}/{ano_sel}")
+        st.subheader(f"🔄 Balanco Mensal — {meses_dict[mes_sel]}/{ano_sel}")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Vendas Totais (Saídas)", f"R$ {vendas_mes:,.2f}")
+        c1.metric("Vendas Totais (Saidas)", f"R$ {vendas_mes:,.2f}")
         c2.metric("PIS Apurado (0.65%)", f"R$ {pis_total:,.2f}")
         c3.metric("COFINS Apurado (3.00%)", f"R$ {cofins_total:,.2f}")
         c4.metric("Imposto Total Devido", f"R$ {imposto_total_mes:,.2f}")
 
         st.markdown("---")
-        st.subheader("📋 Detalhamento das Notas do Mês")
+        st.subheader("📋 Detalhamento das Notas do Mes")
         if not df_mes.empty:
-            st.dataframe(df_mes[['Arquivo', 'Tipo Operação', 'Data Emissão', 'Emitente', 'Destinatário', 'UF Destino', 'Valor Total (R$)']], use_container_width=True)
+            st.dataframe(df_mes[['Arquivo', 'Tipo Operacao', 'Data Emissao', 'Emitente', 'Destinatario', 'UF Destino', 'Valor Total (R$)']], use_container_width=True)
         else:
-            st.info("Nenhuma nota fiscal encontrada para o mês e ano selecionados.")
+            st.info("Nenhuma nota fiscal encontrada para o mes e ano selecionados.")
 
     with tab2:
-        st.subheader(f"📊 Consolidado Mês a Mês — Ano {ano_sel}")
+        st.subheader(f"📊 Consolidado Mes a Mes — Ano {ano_sel}")
         df_ano = df_nfs[df_nfs['Ano'] == ano_sel]
         
         resumo_anual = []
         for m_num, m_nome in meses_dict.items():
-            df_m = df_ano[df_ano['Mês'] == m_num]
-            v_vendas = df_m[df_m['Tipo Operação'] == "Venda (Saída)"]['Valor Total (R$)'].sum() if not df_m.empty else 0.0
-            v_compras = df_m[df_m['Tipo Operação'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_m.empty else 0.0
+            df_m = df_ano[df_ano['Mes'] == m_num]
+            v_vendas = df_m[df_m['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum() if not df_m.empty else 0.0
+            v_compras = df_m[df_m['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum() if not df_m.empty else 0.0
             
             resumo_anual.append({
-                "Mês": m_nome,
-                "Vendas (Saídas)": f"R$ {v_vendas:,.2f}",
+                "Mes": m_nome,
+                "Vendas (Saidas)": f"R$ {v_vendas:,.2f}",
                 "Compras (Entradas)": f"R$ {v_compras:,.2f}",
                 "Resultado Operacional": f"R$ {(v_vendas - v_compras):,.2f}"
             })
@@ -306,16 +298,16 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
         st.table(pd.DataFrame(resumo_anual))
 
     with tab3:
-        st.subheader(f"📑 Apuração Fiscal Detalhada por Empresa — {meses_dict[mes_sel]}/{ano_sel}")
+        st.subheader(f"📑 Apuracao Fiscal Detalhada por Empresa — {meses_dict[mes_sel]}/{ano_sel}")
         relatorio_fiscal = []
-        df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mês'] == mes_sel)]
+        df_mes = df_nfs[(df_nfs['Ano'] == ano_sel) & (df_nfs['Mes'] == mes_sel)]
         
         for emp_nome, emp_info in EMPRESAS_CONFIG.items():
             v_int = 0.0
             v_ext = 0.0
             if not df_mes.empty:
-                v_int = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] == 'MG')]['Valor Total (R$)'].sum()
-                v_ext = df_mes[(df_mes['Tipo Operação'] == "Venda (Saída)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] != 'MG')]['Valor Total (R$)'].sum()
+                v_int = df_mes[(df_mes['Tipo Operacao'] == "Venda (Saida)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] == 'MG')]['Valor Total (R$)'].sum()
+                v_ext = df_mes[(df_mes['Tipo Operacao'] == "Venda (Saida)") & (df_mes['CNPJ Emitente'].isin(emp_info['cnpjs'])) & (df_mes['UF Destino'] != 'MG')]['Valor Total (R$)'].sum()
             
             v_total = v_int + v_ext
             icms_devido = (v_int * emp_info['icms_int']) + (v_ext * emp_info['icms_ext'])
@@ -340,4 +332,4 @@ if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
             
         st.table(pd.DataFrame(relatorio_fiscal))
 else:
-    st.info("👈 Suba os arquivos e clique no botão **➕ Adicionar/Processar Notas**.")
+    st.info("👈 Suba os arquivos e clique no botao **➕ Adicionar/Processar Notas**.")
