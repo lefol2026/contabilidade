@@ -5,42 +5,41 @@ import zipfile
 import io
 import gc
 
-st.set_page_config(page_title="Consolidação Grupo - Painel Fiscal RET/TTS", layout="wide")
+st.set_page_config(page_title="Consolidacao Grupo - Painel Fiscal RET/TTS", layout="wide")
 
-st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuração PIS/COFINS/RET")
-st.caption("Versão Sem Filtro Bloqueante: Leitura Integral de Saídas e Vendas do Full")
+st.title("📊 Painel Consolidado do Grupo — Vendas, Compras & Apuracao PIS/COFINS/RET")
+st.caption("Versao Estavel e Sem Trava de Citing: Leitura Integral de Saidas e Vendas do Full")
 
-# --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS (RETs / e-PTA-RE) ---
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 3, 5]
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 3, 5]
-        "pis": 0.0065,         # PIS Cumulativo (0.65%)
-        "cofins": 0.0300,      # COFINS Cumulativo (3.00%)
-        "irpj": 0.0120,        # IRPJ Presumido (1.20%)
-        "csll": 0.0108,        # CSLL Presumido (1.08%)
-        "regime": "TTS E-Commerce / Corredor Importacao"[cite: 3, 5]
+        "icms_int": 0.06,
+        "icms_ext": 0.013,
+        "pis": 0.0065,
+        "cofins": 0.0300,
+        "irpj": 0.0120,
+        "csll": 0.0108,
+        "regime": "TTS E-Commerce / Corredor Importacao"
     },
     "MCRTOTTI LTDA / BRA": {
         "cnpjs": ["25958668000177", "05221508000128"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 1]
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 1]
+        "icms_int": 0.06,
+        "icms_ext": 0.013,
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 1]
+        "regime": "TTS E-Commerce / Lucro Presumido"
     },
     "BR TOTTI LTDA / BW": {
         "cnpjs": ["23892392000146", "05221508000209"],
-        "icms_int": 0.06,      # TTS MG Venda Interna (6.0%)[cite: 2]
-        "icms_ext": 0.013,     # TTS MG Venda Interestadual (1.3%)[cite: 2]
+        "icms_int": 0.06,
+        "icms_ext": 0.013,
         "pis": 0.0065,
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "regime": "TTS E-Commerce / Lucro Presumido"[cite: 2]
+        "regime": "TTS E-Commerce / Lucro Presumido"
     },
     "BG ADESIVOS LTDA": {
         "cnpjs": ["05221462000124"],
@@ -123,7 +122,6 @@ def extrair_dados_xml(xml_bytes, nome_arquivo):
             cnpj_emit_limpo = cnpj_emit.replace(".", "").replace("/", "").replace("-", "").strip()
             cnpj_dest_limpo = cnpj_dest.replace(".", "").replace("/", "").replace("-", "").strip()
             
-            # Sem trava por CFOP: Toda nota emitida por CNPJ do grupo é Venda (Saída)
             if cnpj_emit_limpo in ALL_CNPJS_GRUPO:
                 tipo_operacao = "Venda (Saida)"
             else:
@@ -173,7 +171,6 @@ def processar_zip_recursivo(zip_bytes):
         pass
     return dados
 
-# --- INTERFACE E BARRA LATERAL ---
 st.sidebar.header("📁 Importar Arquivos")
 arquivos_subidos = st.sidebar.file_uploader(
     "Suba seus arquivos .ZIP ou .XML", 
@@ -191,10 +188,9 @@ if st.sidebar.button("🗑️ Limpar Historico Acumulado", key="btn_clear"):
     st.sidebar.success("Historico apagado!")
     st.rerun()
 
-# --- PROCESSAMENTO PRINCIPAL ---
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Processando XMLs sem restrições..."):
+    with st.spinner("⏳ Processando XMLs sem restricoes..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -231,7 +227,6 @@ if btn_processar and arquivos_subidos:
     else:
         st.warning("⚠️ Nenhum XML de NF-e valido foi extraido dos arquivos.")
 
-# --- EXIBIÇÃO DO PAINEL DE DADOS ---
 if 'df_nfs' in st.session_state and not st.session_state['df_nfs'].empty:
     df_nfs = st.session_state['df_nfs']
     
