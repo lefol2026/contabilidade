@@ -9,51 +9,65 @@ import gc
 # 1. CONFIGURAÇÃO DA PÁGINA & ESTILIZAÇÃO
 # ==========================================
 st.set_page_config(
-    page_title="Executive BI - Consolidação Tributária Grupo BW/MCR", 
-    page_icon="📈", 
+    page_title="Executive B.I. - Grupo BW/MCR", 
+    page_icon="👑", 
     layout="wide"
 )
 
-# Prevenção contra tradutores automáticos do browser (Evita bug de DOM/React)
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# CSS Personalizado para Visual de Dashboard Executivo
+# CSS Profissional para métricas finas e limpas
 st.markdown("""
     <style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border-radius: 8px;
-        padding: 15px;
-        border-left: 5px solid #1E88E5;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    .kpi-card {
+        background: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 10px;
+        padding: 12px 18px;
+        box-shadow: 0px 2px 5px rgba(0,0,0,0.05);
     }
-    .stMetric label {
-        font-size: 0.85rem !important;
-        font-weight: 600 !important;
-        color: #555 !important;
+    .kpi-title {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #666;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+    }
+    .kpi-value {
+        font-size: 1.4rem;
+        font-weight: 800;
+        color: #111;
+    }
+    .kpi-sub {
+        font-size: 0.75rem;
+        color: #00875A;
+        font-weight: 600;
     }
     </style>
 """, unsafe_allow_html=True)
 
+st.title("👑 Executive B.I. — Painel Consolidado de Inteligência Fiscal")
+st.caption("Arquitetura de B.I. Consolidada do Grupo — Vendas, Impostos & DRE Sintética")
+
 # ==========================================
-# 2. CONFIGURAÇÕES TRIBUTÁRIAS E MAPEAMENTO
+# 2. CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS
 # ==========================================
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
-        "icms_int": 0.06, "icms_ext": 0.013, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
     },
     "MCRTOTTI LTDA / BRA": {
         "cnpjs": ["25958668000177", "05221508000128", "25958668000339"],
-        "icms_int": 0.06, "icms_ext": 0.013, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
     },
     "BR TOTTI LTDA / BW": {
         "cnpjs": ["23892392000146", "05221508000209"],
-        "icms_int": 0.06, "icms_ext": 0.013, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
     },
     "BG ADESIVOS LTDA": {
         "cnpjs": ["05221462000124"],
-        "icms_int": 0.0439, "icms_ext": 0.0439, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.0439, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
     }
 }
 
@@ -70,21 +84,34 @@ MESES_NOMES = {
 }
 
 # ==========================================
-# 3. MOTORES NATIVOS DE EXTRAÇÃO DE DADOS
+# 3. HELPER DE FORMATAÇÃO FINANCEIRA (NO TRUNCATE)
+# ==========================================
+def fmt_moeda(valor):
+    if abs(valor) >= 1_000_000:
+        return f"R$ {valor/1_000_000:,.2f} Mi"
+    elif abs(valor) >= 1_000:
+        return f"R$ {valor/1_000:,.1f} K"
+    else:
+        return f"R$ {valor:,.2f}"
+
+def fmt_brl(valor):
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+# ==========================================
+# 4. ENGINE DE EXTRAÇÃO E PROCESSAMENTO
 # ==========================================
 def identificar_mes_por_caminho(caminho_completo: str) -> int:
     for pasta, mes_num in MAPA_PASTAS_MESES.items():
         if pasta in caminho_completo:
             return mes_num
-    return 3  # Março como padrão defensivo
+    return 3
 
-def extrair_dados_conteudo_nativo(bytes_content: bytes, caminho_completo: str) -> dict:
-    """Extrai informações monetárias de arquivos via varredura binária/string sem dependências externas."""
+def extrair_dados_universal(bytes_content: bytes, caminho_completo: str) -> dict:
     try:
         raw_text = bytes_content.decode('latin-1', errors='ignore')
         mes_num = identificar_mes_por_caminho(caminho_completo)
         
-        # Extração de valores financeiros
+        # Extração de valores monetários
         valores = re.findall(r'R\$\s*([\d\.\,]+)', raw_text)
         valor_final = 0.0
         
@@ -94,37 +121,43 @@ def extrair_dados_conteudo_nativo(bytes_content: bytes, caminho_completo: str) -
                     v_clean = float(v.replace('.', '').replace(',', '.'))
                     if v_clean > valor_final:
                         valor_final = v_clean
-                except Exception:
-                    pass
+                except: pass
 
-        # Estrutura de contingência para nome de arquivo
         if valor_final == 0.0:
             numeros = re.findall(r'(\d+[\.\,]\d{2})', caminho_completo)
             if numeros:
-                try:
-                    valor_final = float(numeros[0].replace(',', '.'))
-                except Exception:
-                    valor_final = 185000.0
+                try: valor_final = float(numeros[0].replace(',', '.'))
+                except: valor_final = 185000.0
             else:
                 valor_final = 185000.0
 
         nome_arquivo = caminho_completo.split('/')[-1]
+
+        # Identificação inteligente de empresa pelo nome do arquivo/caminho
+        empresa_alocada = "MCRTOTTI LTDA / BRA"
+        cam_upper = caminho_completo.upper()
+        if "RTX" in cam_upper:
+            empresa_alocada = "RTX IMPORTS COMERCIAL LTDA"
+        elif "BR_TOTTI" in cam_upper or "BW" in cam_upper:
+            empresa_alocada = "BR TOTTI LTDA / BW"
+        elif "BG" in cam_upper or "ADESIVOS" in cam_upper:
+            empresa_alocada = "BG ADESIVOS LTDA"
 
         return {
             'Arquivo': str(nome_arquivo),
             'Caminho_Origem': str(caminho_completo),
             'Data Emissao': f"01/{mes_num:02d}/2026",
             'Mes_Num': mes_num,
-            'Descrição': f"Lançamento Fiscal ({nome_arquivo})",
+            'Descrição': f"Livro Fiscal ({nome_arquivo})",
             'Tipo Operacao': "Venda (Saida)",
             'Valor Total (R$)': float(valor_final),
-            'Empresa': "MCRTOTTI LTDA / BRA"
+            'Empresa': empresa_alocada
         }
     except Exception:
-        return None
+        pass
+    return None
 
-def processar_pacote_zip(zip_bytes: bytes) -> list:
-    """Varredura recursiva silenciosa de pacotes compactados."""
+def processar_zip_universal(zip_bytes: bytes) -> list:
     dados = []
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
@@ -136,63 +169,52 @@ def processar_pacote_zip(zip_bytes: bytes) -> list:
                 if fname_lower.endswith(('.pdf', '.xml', '.csv', '.txt', '.xlsx', '.xls')):
                     try:
                         content = z.read(info)
-                        res = extrair_dados_conteudo_nativo(content, info.filename)
-                        if res:
-                            dados.append(res)
+                        res = extrair_dados_universal(content, info.filename)
+                        if res: dados.append(res)
                         del content
-                    except Exception:
-                        pass
+                    except: pass
                 elif fname_lower.endswith(('.zip', '.rar')):
                     try:
                         sub_bytes = z.read(info)
-                        dados.extend(processar_pacote_zip(sub_bytes))
+                        dados.extend(processar_zip_universal(sub_bytes))
                         del sub_bytes
-                    except Exception:
-                        pass
+                    except: pass
     except Exception:
         pass
     return dados
 
 # ==========================================
-# 4. BARRA LATERAL (FILTROS E CONTROLE)
+# 5. CONTROLE LATERAL
 # ==========================================
-st.sidebar.image("https://img.icons8.com/color/96/dashboard--v1.png", width=64)
-st.sidebar.title("BI Executive Control")
-
-st.sidebar.markdown("### 📥 Carga de Dados")
+st.sidebar.title("📥 Carga de Dados BI")
 arquivos_subidos = st.sidebar.file_uploader(
-    "Carregar pacotes (.ZIP ou PDFs/XMLs/CSVs)", 
+    "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_exec_bi"
+    key="upl_bi_v2"
 )
 
-btn_processar = st.sidebar.button("⚙️ Processar & Atualizar BI", type="primary", key="btn_proc_exec")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v2")
 
-if st.sidebar.button("🗑️ Resetar Cubo de Dados", key="btn_reset_exec"):
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v2"):
     if 'df_bi' in st.session_state:
         del st.session_state['df_bi']
-    st.sidebar.success("Cubo de dados zerado!")
+    st.sidebar.success("Base limpa!")
     st.rerun()
 
-# ==========================================
-# 5. PROCESSAMENTO DE CARGA E EFD
-# ==========================================
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Processando dados e estruturando indicadores de BI..."):
+    with st.spinner("⏳ Processando e estruturando o BI..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
                 if arq.name.lower().endswith('.zip'):
-                    novos_dados.extend(processar_pacote_zip(content))
+                    novos_dados.extend(processar_zip_universal(content))
                 else:
-                    res = extrair_dados_conteudo_nativo(content, arq.name)
-                    if res:
-                        novos_dados.append(res)
+                    res = extrair_dados_universal(content, arq.name)
+                    if res: novos_dados.append(res)
                 del content
-            except Exception:
-                pass
+            except Exception: pass
             gc.collect()
 
     if novos_dados:
@@ -205,82 +227,153 @@ if btn_processar and arquivos_subidos:
         else:
             st.session_state['df_bi'] = df_novos
 
-        st.success(f"✅ {len(novos_dados)} documentos integrados ao BI!")
+        st.success(f"✅ {len(novos_dados)} registros carregados!")
         gc.collect()
-    else:
-        st.warning("⚠️ Nenhum registro válido identificado nos arquivos.")
 
 # ==========================================
-# 6. DASHBOARD BI E PAINEL EXECUTIVO
+# 6. DASHBOARD BI EXECUTIVO (MÚLTIPLAS TABS)
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
 
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🔍 Filtros Estratégicos")
+    st.sidebar.header("🎯 Filtros Estratégicos")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v2")
     
     meses_disp = ["Todos os Meses (Consolidado Anual)"] + sorted(list(df_bi[df_bi['Ano'] == ano_sel]['Mês'].unique()))
-    mes_sel = st.sidebar.selectbox("Visão Mensal", meses_disp, key="sb_mes_bi")
+    mes_sel = st.sidebar.selectbox("Visão Mensal", meses_disp, key="sb_mes_bi_v2")
     
-    empresas_disp = ["Todas as Empresas do Grupo"] + list(EMPRESAS_CONFIG.keys())
-    empresa_sel = st.sidebar.selectbox("Empresa / Filial", empresas_disp, key="sb_emp_bi")
+    empresas_disp = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
+    empresa_sel = st.sidebar.selectbox("Entidade / Empresa", empresas_disp, key="sb_emp_bi_v2")
 
-    # Aplicação de Filtros Dinâmicos
+    # Filtragem dos dados
     df_filtrado = df_bi[df_bi['Ano'] == ano_sel]
     if mes_sel != "Todos os Meses (Consolidado Anual)":
         df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
-    if empresa_sel != "Todas as Empresas do Grupo":
+    if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
 
-    # Cálculos Tributários Gerais
-    fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
-    icms_val = fat_bruto * 0.06
-    piscofins_val = fat_bruto * 0.0365
-    irpjcsll_val = fat_bruto * 0.0228
+    # Cálculos Consolidados
+    fat_bruto = df_filtrado['Valor Total (R$)'].sum()
+    
+    # Cálculo por alíquotas reais de cada empresa
+    icms_val, pis_val, cofins_val, irpj_val, csll_val = 0.0, 0.0, 0.0, 0.0, 0.0
+    for emp_nome, emp_info in EMPRESAS_CONFIG.items():
+        sub_df = df_filtrado[df_filtrado['Empresa'] == emp_nome]
+        if not sub_df.empty:
+            sub_fat = sub_df['Valor Total (R$)'].sum()
+            icms_val += sub_fat * emp_info['icms']
+            pis_val += sub_fat * emp_info['pis']
+            cofins_val += sub_fat * emp_info['cofins']
+            irpj_val += sub_fat * emp_info['irpj']
+            csll_val += sub_fat * emp_info['csll']
+
+    piscofins_val = pis_val + cofins_val
+    irpjcsll_val = irpj_val + csll_val
     tot_impostos = icms_val + piscofins_val + irpjcsll_val
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CABEÇALHO DE INDICADORES (KPIs)
-    st.subheader(f"📊 Indicadores de Desempenho — {ano_sel} ({mes_sel})")
+    # KPIS PRINCIPAIS COM CARTÕES LIMPOS (NO RETICÊNCIAS)
+    st.markdown("### 📊 Visão Geral do Período")
     
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("💰 Faturamento Bruto", f"R$ {fat_bruto:,.2f}")
-    k2.metric("🏛️ ICMS TTS (6%)", f"R$ {icms_val:,.2f}")
-    k3.metric("📊 PIS/COFINS (3.65%)", f"R$ {piscofins_val:,.2f}")
-    k4.metric("⚖️ IRPJ/CSLL (2.28%)", f"R$ {irpjcsll_val:,.2f}")
-    k5.metric("🚨 Total Impostos", f"R$ {tot_impostos:,.2f}", f"{aliquota_efetiva:.2f}% Efetiva")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-title">💰 Faturamento</div>
+            <div class="kpi-value">{fmt_moeda(fat_bruto)}</div>
+            <div class="kpi-sub">{fmt_brl(fat_bruto)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-title">🏛️ ICMS TTS (MG)</div>
+            <div class="kpi-value">{fmt_moeda(icms_val)}</div>
+            <div class="kpi-sub">{(icms_val/fat_bruto*100 if fat_bruto>0 else 0):.2f}% da receita</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-title">📊 PIS / COFINS</div>
+            <div class="kpi-value">{fmt_moeda(piscofins_val)}</div>
+            <div class="kpi-sub">3.65% Padrão Cumulativo</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col4:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-title">⚖️ IRPJ / CSLL</div>
+            <div class="kpi-value">{fmt_moeda(irpjcsll_val)}</div>
+            <div class="kpi-sub">2.28% Presumido</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col5:
+        st.markdown(f"""
+        <div class="kpi-card" style="border-left-color: #D32F2F;">
+            <div class="kpi-title">🚨 Total Tributos</div>
+            <div class="kpi-value">{fmt_moeda(tot_impostos)}</div>
+            <div class="kpi-sub" style="color: #D32F2F;">Carga: {aliquota_efetiva:.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # ÁREA GRÁFICA INTERATIVA
-    col_chart1, col_chart2 = st.columns([2, 1])
+    # ESTRUTURA EM NAVEGAÇÃO DE TABS EXECUTIVAS
+    tab1, tab2, tab3 = st.tabs(["📈 DRE & Tendências", "🏢 Análise por Empresa", "📋 Audit de Documentos"])
 
-    with col_chart1:
-        st.subheader("📈 Faturamento Consolidado Mês a Mês")
-        df_evo = df_bi[df_bi['Ano'] == ano_sel].groupby('Mês')['Valor Total (R$)'].sum().reset_index()
-        df_evo_indexed = df_evo.set_index('Mês')
-        st.bar_chart(df_evo_indexed['Valor Total (R$)'], color="#1E88E5")
+    with tab1:
+        st.subheader("📊 Evolução Temporal de Vendas Mês a Mês")
+        
+        # Agrupamento da Evolução Temporal
+        df_chart_ano = df_bi[df_bi['Ano'] == ano_sel]
+        if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
+            df_chart_ano = df_chart_ano[df_chart_ano['Empresa'] == empresa_sel]
 
-    with col_chart2:
-        st.subheader("📊 Composição Tributária")
-        df_tributos = pd.DataFrame({
-            'Imposto': ['ICMS TTS (6%)', 'PIS/COFINS (3.65%)', 'IRPJ/CSLL (2.28%)'],
-            'Valor (R$)': [icms_val, piscofins_val, irpjcsll_val]
-        }).set_index('Imposto')
-        st.bar_chart(df_tributos['Valor (R$)'], color="#FF8F00")
+        chart_data = df_chart_ano.groupby('Mês')['Valor Total (R$)'].sum().reset_index()
+        chart_data_indexed = chart_data.set_index('Mês')
 
-    st.markdown("---")
+        c_chart1, c_chart2 = st.columns([2, 1])
+        with c_chart1:
+            st.markdown("**Faturamento Bruto por Mês (R$)**")
+            st.bar_chart(chart_data_indexed['Valor Total (R$)'], color="#1E88E5")
+        
+        with c_chart2:
+            st.markdown("**Sintético Tributário do Período**")
+            df_trib_pie = pd.DataFrame({
+                'Imposto': ['ICMS TTS', 'PIS/COFINS', 'IRPJ/CSLL'],
+                'Valor (R$)': [icms_val, piscofins_val, irpjcsll_val]
+            }).set_index('Imposto')
+            st.bar_chart(df_trib_pie['Valor (R$)'], color="#FF8F00")
 
-    # TABELA EXECUTIVA DETALHADA
-    st.subheader("📋 Audit de Registros do Período")
-    st.dataframe(
-        df_filtrado[['Arquivo', 'Caminho_Origem', 'Mês', 'Empresa', 'Descrição', 'Valor Total (R$)']],
-        use_container_width=True,
-        key="dt_exec_display"
-    )
+    with tab2:
+        st.subheader("🏢 Comparativo de Faturamento Entre Empresas do Grupo")
+        df_emp_sum = df_filtrado.groupby('Empresa')['Valor Total (R$)'].sum().reset_index()
+        df_emp_sum['Fat_Formatado'] = df_emp_sum['Valor Total (R$)'].apply(fmt_brl)
+        
+        c_emp1, c_emp2 = st.columns([1, 1])
+        with c_emp1:
+            st.bar_chart(df_emp_sum.set_index('Empresa')['Valor Total (R$)'], color="#43A047")
+        
+        with c_emp2:
+            st.markdown("**Tabela Consolidada por Empresa**")
+            st.dataframe(df_emp_sum[['Empresa', 'Fat_Formatado']], use_container_width=True)
+
+    with tab3:
+        st.subheader("📋 Detalhamento dos Registros Digitais")
+        st.dataframe(
+            df_filtrado[['Arquivo', 'Caminho_Origem', 'Mês', 'Empresa', 'Descrição', 'Valor Total (R$)']],
+            use_container_width=True,
+            key="dt_exec_tab3"
+        )
 
 else:
-    st.info("👈 Faça o upload dos pacotes no menu lateral e clique em **⚙️ Processar & Atualizar BI**.")
+    st.info("👈 Envie o pacote `.ZIP` no menu lateral e clique em **⚙️ Atualizar Dashboard BI**.")
