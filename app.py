@@ -228,12 +228,12 @@ arquivos_subidos = st.sidebar.file_uploader(
     "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_bi_v10"
+    key="upl_bi_v11"
 )
 
-btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v10")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v11")
 
-if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v10"):
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v11"):
     if 'df_bi' in st.session_state:
         del st.session_state['df_bi']
     st.sidebar.success("Base limpa!")
@@ -270,7 +270,7 @@ if btn_processar and arquivos_subidos:
         gc.collect()
 
 # ==========================================
-# 6. DASHBOARD B.I. COM APURAÇÃO CORRETA POR EMPRESA
+# 6. DASHBOARD B.I. COM APURAÇÃO CORRIGIDA DE IMPOSTOS
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
@@ -279,7 +279,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     st.sidebar.header("🎯 Filtros Globais")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v10")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v11")
 
     df_base_ano = df_bi[df_bi['Ano'] == ano_sel]
 
@@ -292,7 +292,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             "Empresa Ativa:",
             options=empresas_disp,
             default="TODAS AS EMPRESAS (GRUPO)",
-            key="pills_empresa_interativa_v10"
+            key="pills_empresa_interativa_v11"
         )
     except AttributeError:
         empresa_sel = st.radio(
@@ -300,7 +300,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=empresas_disp,
             index=0,
             horizontal=True,
-            key="radio_empresa_interativa_v10"
+            key="radio_empresa_interativa_v11"
         )
 
     if not empresa_sel:
@@ -321,7 +321,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             "Mês Ativo:",
             options=meses_ordenados,
             default="Consolidado Anual",
-            key="pills_mes_interativo_v10"
+            key="pills_mes_interativo_v11"
         )
     except AttributeError:
         mes_ativo = st.radio(
@@ -329,7 +329,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=meses_ordenados,
             index=0,
             horizontal=True,
-            key="radio_mes_interativo_v10"
+            key="radio_mes_interativo_v11"
         )
 
     if not mes_ativo:
@@ -341,11 +341,11 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     else:
         df_filtrado = df_base_ano_emp.copy()
 
-    # Totais operacionais do filtro
+    # Totais operacionais do filtro ativo
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
     compras_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
 
-    # --- CÁLCULO DINÂMICO DOS IMPOSTOS RESPEITANDO A EMPRESA E O MÊS FILTRADOS ---
+    # --- CÁLCULO RESTRITO AO CONJUNTO FILTRADO (SEM VAZAMENTO DE GLOBAL) ---
     icms_val, pis_val, cofins_val, irpj_val, csll_val = 0.0, 0.0, 0.0, 0.0, 0.0
 
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
