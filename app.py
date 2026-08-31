@@ -1,45 +1,50 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 import zipfile
 import io
 import re
 import gc
 
-st.set_page_config(page_title="Consolidação Grupo - Leitor de PDFs/Livro Caixa", layout="wide")
+st.set_page_config(page_title="Dashboard BI - Grupo BW/MCR", layout="wide")
 
+# Remove traduções e barras dinâmicas do navegador
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-st.title("📊 Painel Consolidado do Grupo — Módulo Livro Caixa & PDFs")
-st.caption("Modo Nativo: Processamento seguro sem dependências externas de bibliotecas")
+st.title("📈 Dashboard Executivo de BI — Faturamento & Apuração Tributária")
+st.caption("Visão Consolidada Anual e Mensal com Filtros Dinâmicos em Tempo Real")
 
 # --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS ---
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
-        "icms_int": 0.06, "icms_ext": 0.013, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.06, "piscofins": 0.0365, "irpjcsll": 0.0228
     },
     "MCRTOTTI LTDA / BRA": {
         "cnpjs": ["25958668000177", "05221508000128", "25958668000339"],
-        "icms_int": 0.06, "icms_ext": 0.013, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.06, "piscofins": 0.0365, "irpjcsll": 0.0228
     },
     "BR TOTTI LTDA / BW": {
         "cnpjs": ["23892392000146", "05221508000209"],
-        "icms_int": 0.06, "icms_ext": 0.013, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.06, "piscofins": 0.0365, "irpjcsll": 0.0228
     },
     "BG ADESIVOS LTDA": {
         "cnpjs": ["05221462000124"],
-        "icms_int": 0.0439, "icms_ext": 0.0439, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108
+        "icms": 0.0439, "piscofins": 0.0365, "irpjcsll": 0.0228
     }
 }
 
-# --- PROCESSAMENTO NATIVO DE PDFS E ARQUIVOS ---
-def extrair_dados_pdf_nativo(pdf_bytes, nome_arquivo):
+# --- EXTRACTOR NATIVO DE PDF/ARQUIVOS ---
+def extrair_dados_universal(bytes_content, nome_arquivo):
     try:
-        # Varredura direta de padrões em texto bruto
-        raw_content = pdf_bytes.decode('latin-1', errors='ignore')
+        raw_text = bytes_content.decode('latin-1', errors='ignore')
         
-        # Busca por padrões de valores (R$)
-        valores = re.findall(r'R\$\s*([\d\.\,]+)', raw_content)
+        # 1. Extração de Data
+        datas = re.findall(r'\b(\d{2}/\d{2}/\d{4})\b', raw_text)
+        data_final = datas[0] if datas else "01/03/2026"
+        
+        # 2. Extração de Valores
+        valores = re.findall(r'R\$\s*([\d\.\,]+)', raw_text)
         valor_final = 0.0
         if valores:
             for v in valores:
@@ -47,24 +52,20 @@ def extrair_dados_pdf_nativo(pdf_bytes, nome_arquivo):
                     v_clean = float(v.replace('.', '').replace(',', '.'))
                     if v_clean > valor_final:
                         valor_final = v_clean
-                except:
-                    pass
+                except: pass
 
-        # Se não achar padrão R$, tenta extrair valor numérico do nome do arquivo (ex: chaves/danfes)
         if valor_final == 0.0:
             numeros = re.findall(r'(\d+[\.\,]\d{2})', nome_arquivo)
             if numeros:
-                try:
-                    valor_final = float(numeros[0].replace(',', '.'))
-                except:
-                    valor_final = 100.0  # Valor base para registro
+                try: valor_final = float(numeros[0].replace(',', '.'))
+                except: valor_final = 150.0
             else:
                 valor_final = 150.0
 
         return {
             'Arquivo': str(nome_arquivo),
-            'Data Emissao': "01/03/2026",
-            'Descrição': f"Documento PDF Processado ({nome_arquivo})",
+            'Data Emissao': data_final,
+            'Descrição': f"Lançamento ({nome_arquivo})",
             'Tipo Operacao': "Venda (Saida)",
             'Valor Total (R$)': float(valor_final),
             'Empresa': "MCRTOTTI LTDA / BRA"
@@ -73,47 +74,6 @@ def extrair_dados_pdf_nativo(pdf_bytes, nome_arquivo):
         pass
     return None
 
-def extrair_dados_tabela(file_bytes, nome_arquivo):
-    registros = []
-    try:
-        df = None
-        if nome_arquivo.lower().endswith('.csv'):
-            try: df = pd.read_csv(io.BytesIO(file_bytes), sep=None, engine='python')
-            except: df = pd.read_csv(io.BytesIO(file_bytes), sep=';')
-        elif nome_arquivo.lower().endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(io.BytesIO(file_bytes))
-
-        if df is not None and not df.empty:
-            df.columns = [str(c).strip().upper() for c in df.columns]
-            col_data = next((c for c in df.columns if any(k in c for k in ['DATA', 'DATE', 'EMISSAO'])), None)
-            col_valor = next((c for c in df.columns if any(k in c for k in ['VALOR', 'VALOR TOTAL', 'VALOR (R$)', 'CREDITO', 'RECEITA'])), None)
-            col_desc = next((c for c in df.columns if any(k in c for k in ['DESCRICAO', 'HISTORICO', 'EMPRESA', 'ORIGEM'])), None)
-
-            if col_valor:
-                for _, row in df.iterrows():
-                    val = row[col_valor]
-                    if pd.notna(val):
-                        if isinstance(val, str):
-                            val = val.replace("R$", "").replace(".", "").replace(",", ".").strip()
-                        try:
-                            val_float = float(val)
-                            dt_str = str(row[col_data])[:10] if col_data and pd.notna(row[col_data]) else "01/03/2026"
-                            desc_str = str(row[col_desc]) if col_desc and pd.notna(row[col_desc]) else nome_arquivo
-
-                            registros.append({
-                                'Arquivo': str(nome_arquivo),
-                                'Data Emissao': dt_str,
-                                'Descrição': desc_str,
-                                'Tipo Operacao': "Venda (Saida)" if val_float >= 0 else "Compra (Entrada)",
-                                'Valor Total (R$)': float(abs(val_float)),
-                                'Empresa': "MCRTOTTI LTDA / BRA"
-                            })
-                        except:
-                            pass
-    except Exception:
-        pass
-    return registros
-
 def processar_zip_universal(zip_bytes):
     dados = []
     try:
@@ -121,24 +81,14 @@ def processar_zip_universal(zip_bytes):
             for info in z.infolist():
                 if info.filename.startswith('__MACOSX') or info.is_dir():
                     continue
-                
                 fname_lower = info.filename.lower()
                 nome_base = info.filename.split('/')[-1]
                 
-                if fname_lower.endswith('.pdf'):
+                if fname_lower.endswith(('.pdf', '.xml', '.csv', '.txt')):
                     try:
                         content = z.read(info)
-                        res = extrair_dados_pdf_nativo(content, nome_base)
-                        if res:
-                            dados.append(res)
-                        del content
-                    except: pass
-                elif fname_lower.endswith(('.csv', '.xlsx', '.xls')):
-                    try:
-                        content = z.read(info)
-                        res = extrair_dados_tabela(content, nome_base)
-                        if res:
-                            dados.extend(res)
+                        res = extrair_dados_universal(content, nome_base)
+                        if res: dados.append(res)
                         del content
                     except: pass
                 elif fname_lower.endswith(('.zip', '.rar')):
@@ -151,103 +101,142 @@ def processar_zip_universal(zip_bytes):
         pass
     return dados
 
-# --- INTERFACE ---
-st.sidebar.header("📁 Importar Documentos")
+# --- SIDEBAR DE CONTROLE E UPLOAD ---
+st.sidebar.header("📁 Importar Dados")
 arquivos_subidos = st.sidebar.file_uploader(
-    "Suba seus arquivos .ZIP (contendo PDFs, Excel ou CSV)", 
-    type=["zip", "pdf", "csv", "xlsx", "xls"], 
+    "Suba arquivos .ZIP ou relatórios", 
+    type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
     key="file_up"
 )
 
-st.sidebar.markdown("---")
-btn_processar = st.sidebar.button("➕ Processar Documentos", type="primary", key="btn_proc")
+btn_processar = st.sidebar.button("➕ Atualizar Dashboard BI", type="primary", key="btn_proc")
 
-if st.sidebar.button("🗑️ Limpar Historico Acumulado", key="btn_clear"):
-    if 'df_caixa' in st.session_state:
-        del st.session_state['df_caixa']
-    st.sidebar.success("Historico apagado!")
+if st.sidebar.button("🗑️ Limpar Banco de Dados", key="btn_clear"):
+    if 'df_bi' in st.session_state:
+        del st.session_state['df_bi']
+    st.sidebar.success("Dados redefinidos!")
     st.rerun()
 
 # --- PROCESSAMENTO ---
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Processando documentos sem depender de bibliotecas externas..."):
+    with st.spinner("⏳ Estruturando cubo de dados de BI..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
                 if arq.name.lower().endswith('.zip'):
                     novos_dados.extend(processar_zip_universal(content))
-                elif arq.name.lower().endswith('.pdf'):
-                    res = extrair_dados_pdf_nativo(content, arq.name)
+                else:
+                    res = extrair_dados_universal(content, arq.name)
                     if res: novos_dados.append(res)
-                elif arq.name.lower().endswith(('.csv', '.xlsx', '.xls')):
-                    res = extrair_dados_tabela(content, arq.name)
-                    if res: novos_dados.extend(res)
                 del content
             except Exception as e:
-                st.error(f"Erro ao processar {arq.name}: {e}")
+                st.error(f"Erro: {e}")
             gc.collect()
 
     if novos_dados:
         df_novos = pd.DataFrame(novos_dados)
         df_novos['Data_Parsed'] = pd.to_datetime(df_novos['Data Emissao'], format='%d/%m/%Y', errors='coerce')
+        
+        # Correção da Atribuição Automática das Datas
         df_novos['Ano'] = df_novos['Data_Parsed'].dt.year.fillna(2026).astype(int)
-        df_novos['Mes'] = df_novos['Data_Parsed'].dt.month.fillna(3).astype(int)
+        df_novos['Mes_Num'] = df_novos['Data_Parsed'].dt.month.fillna(3).astype(int)
 
-        if 'df_caixa' in st.session_state:
-            df_existente = st.session_state['df_caixa']
-            df_combinado = pd.concat([df_existente, df_novos], ignore_index=True)
-            st.session_state['df_caixa'] = df_combinado
+        meses_map = {
+            1: "01-Jan", 2: "02-Fev", 3: "03-Mar", 4: "04-Abr",
+            5: "05-Mai", 6: "06-Jun", 7: "07-Jul", 8: "08-Ago",
+            9: "09-Set", 10: "10-Out", 11: "11-Nov", 12: "12-Dez"
+        }
+        df_novos['Mês'] = df_novos['Mes_Num'].map(meses_map)
+
+        if 'df_bi' in st.session_state:
+            st.session_state['df_bi'] = pd.concat([st.session_state['df_bi'], df_novos], ignore_index=True)
         else:
-            st.session_state['df_caixa'] = df_novos
+            st.session_state['df_bi'] = df_novos
 
-        st.success(f"✅ Processados {len(novos_dados)} documentos com sucesso!")
+        st.success(f"✅ {len(novos_dados)} registros incorporados ao BI!")
         gc.collect()
-    else:
-        st.warning("⚠️ Nenhum documento válido em PDF, CSV ou Excel foi extraído.")
 
-# --- EXIBIÇÃO ---
-if 'df_caixa' in st.session_state and not st.session_state['df_caixa'].empty:
-    df_caixa = st.session_state['df_caixa']
+# --- INTERFACE DE BI ---
+if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
+    df_bi = st.session_state['df_bi']
     
-    st.info(f"📌 **Total Acumulado:** {len(df_caixa)} Documentos Salvos na Memória.")
+    st.sidebar.markdown("---")
+    st.sidebar.header("🔍 Filtros Interativos do BI")
+    
+    # Filtro de Ano
+    anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
+    ano_sel = st.sidebar.selectbox("Ano de Análise", anos_disp, index=len(anos_disp)-1 if anos_disp else 0)
+    
+    # Filtro Dinâmico de Mês (Permite ver TODOS juntos)
+    meses_disponiveis = ["Todos os Meses"] + sorted(list(df_bi[df_bi['Ano'] == ano_sel]['Mês'].unique()))
+    mes_sel = st.sidebar.selectbox("Filtrar Mês Específico", meses_disponiveis)
+    
+    # Filtro de Empresa
+    empresas_disp = ["Todas as Empresas"] + list(EMPRESAS_CONFIG.keys())
+    empresa_sel = st.sidebar.selectbox("Filtrar por Empresa", empresas_disp)
 
-    anos_disp = sorted([int(a) for a in df_caixa['Ano'].unique()])
-    
-    st.sidebar.header("📅 Filtro de Periodo")
-    ano_sel = st.sidebar.selectbox("Selecione o Ano", anos_disp, index=len(anos_disp)-1 if anos_disp else 0, key="sel_ano")
-    
-    meses_dict = {
-        1: "Janeiro", 2: "Fevereiro", 3: "Marco", 4: "Abril",
-        5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
-        9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
-    }
-    mes_sel = st.sidebar.selectbox("Selecione o Mes", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], key="sel_mes")
+    # Aplicação dos Filtros Dinâmicos
+    df_filtrado = df_bi[df_bi['Ano'] == ano_sel]
+    if mes_sel != "Todos os Meses":
+        df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
+    if empresa_sel != "Todas as Empresas":
+        df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
 
-    df_mes = df_caixa[(df_caixa['Ano'] == ano_sel) & (df_caixa['Mes'] == mes_sel)]
-    vendas_mes = df_mes[df_mes['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
-    
-    piscofins = vendas_mes * 0.0365
-    irpjcsll = vendas_mes * 0.0228
-    icms = vendas_mes * 0.06
-    imposto_total = piscofins + irpjcsll + icms
+    # Cálculos Indicadores Chave (KPIs)
+    faturamento_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
+    icms_total = faturamento_total * 0.06
+    piscofins_total = faturamento_total * 0.0365
+    irpjcsll_total = faturamento_total * 0.0228
+    impostos_totais = icms_total + piscofins_total + irpjcsll_total
 
-    st.markdown(f"### 🔄 Resumo do Período — {meses_dict[mes_sel]}/{ano_sel}")
+    # TOP METRICAS
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Faturamento Processado", f"R$ {vendas_mes:,.2f}")
-    c2.metric("ICMS Estimado (6%)", f"R$ {icms:,.2f}")
-    c3.metric("PIS/COFINS (3.65%)", f"R$ {piscofins:,.2f}")
-    c4.metric("IRPJ/CSLL (2.28%)", f"R$ {irpjcsll:,.2f}")
-    c5.metric("Total Tributos", f"R$ {imposto_total:,.2f}")
+    c1.metric("💰 Faturamento Bruto", f"R$ {faturamento_total:,.2f}")
+    c2.metric("🏛️ ICMS TTS (6%)", f"R$ {icms_total:,.2f}")
+    c3.metric("📊 PIS/COFINS (3.65%)", f"R$ {piscofins_total:,.2f}")
+    c4.metric("⚖️ IRPJ/CSLL (2.28%)", f"R$ {irpjcsll_total:,.2f}")
+    c5.metric("🚨 Total Impostos", f"R$ {impostos_totais:,.2f}")
 
     st.markdown("---")
-    st.subheader("📋 Documentos do Período")
-    if not df_mes.empty:
-        st.dataframe(
-            df_mes[['Arquivo', 'Data Emissao', 'Descrição', 'Tipo Operacao', 'Valor Total (R$)']], 
-            use_container_width=True,
-            key="df_display"
+
+    # GRÁFICOS DINÂMICOS DE BI
+    g1, g2 = st.columns([2, 1])
+
+    with g1:
+        st.subheader("📊 Evolução Mensal do Faturamento (Visão Consolidada)")
+        df_evolucao = df_bi[df_bi['Ano'] == ano_sel].groupby('Mês')['Valor Total (R$)'].sum().reset_index()
+        fig_barras = px.bar(
+            df_evolucao, x='Mês', y='Valor Total (R$)',
+            text_auto='.2s', color='Valor Total (R$)',
+            color_continuous_scale='Viridis',
+            labels={'Valor Total (R$)': 'Faturamento (R$)'}
         )
-    else:
-        st.info("Nenum documento encontrado para o mês e ano selecionados.")
+        fig_barras.update_layout(xaxis_title="Mês", yaxis_title="Faturamento (R$)", showlegend=False)
+        st.plotly_chart(fig_barras, use_container_width=True)
+
+    with g2:
+        st.subheader("🍩 Distribuição dos Impostos")
+        df_impostos = pd.DataFrame({
+            'Imposto': ['ICMS TTS', 'PIS/COFINS', 'IRPJ/CSLL'],
+            'Valor': [icms_total, piscofins_total, irpjcsll_total]
+        })
+        fig_pizza = px.pie(
+            df_impostos, names='Imposto', values='Valor',
+            hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel
+        )
+        st.plotly_chart(fig_pizza, use_container_width=True)
+
+    st.markdown("---")
+    
+    # TABELA DE DETALHAMENTO DINÂMICO
+    st.subheader("📋 Tabela de Documentos do Período Filtrado")
+    st.dataframe(
+        df_filtrado[['Arquivo', 'Data Emissao', 'Mês', 'Empresa', 'Descrição', 'Valor Total (R$)']],
+        use_container_width=True,
+        key="table_bi"
+    )
+
+else:
+    st.info("👈 Envie seus arquivos no menu lateral e clique em **➕ Atualizar Dashboard BI**.")
