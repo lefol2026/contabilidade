@@ -16,7 +16,6 @@ st.set_page_config(
 
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# Estilização CSS para Cards de KPI Padronizados
 st.markdown("""
     <style>
     .kpi-card {
@@ -66,23 +65,19 @@ st.caption("Faturamento de Vendas, Compras de Entradas & Apuração Tributária 
 # 2. CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS
 # ==========================================
 EMPRESAS_CONFIG = {
-    "RTX IMPORTS COMERCIAL LTDA": {
-        "cnpjs": ["55175101000195"],
-        "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108,
-        "peso_grupo": 0.20
-    },
     "MCRTOTTI LTDA / BRA": {
-        "cnpjs": ["25958668000177", "05221508000128", "25958668000339"],
         "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108,
         "peso_grupo": 0.45
     },
     "BR TOTTI LTDA / BW": {
-        "cnpjs": ["23892392000146", "05221508000209"],
         "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108,
         "peso_grupo": 0.25
     },
+    "RTX IMPORTS COMERCIAL LTDA": {
+        "icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108,
+        "peso_grupo": 0.20
+    },
     "BG ADESIVOS LTDA": {
-        "cnpjs": ["05221462000124"],
         "icms": 0.0439, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108,
         "peso_grupo": 0.10
     }
@@ -115,7 +110,7 @@ def fmt_brl(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 4. ENGINE DE EXTRAÇÃO
+# 4. ENGINE DE EXTRAÇÃO ISOLADA
 # ==========================================
 def identificar_mes_por_caminho(caminho_completo: str) -> int:
     for pasta, mes_num in MAPA_PASTAS_MESES.items():
@@ -155,38 +150,26 @@ def extrair_dados_universal(bytes_content: bytes, caminho_completo: str) -> list
 
         nome_arquivo = caminho_completo.split('/')[-1]
 
-        empresa_especifica = None
+        # Determina a empresa proprietária do lançamento
         if "RTX" in cam_upper:
-            empresa_especifica = "RTX IMPORTS COMERCIAL LTDA"
+            emp_alocada = "RTX IMPORTS COMERCIAL LTDA"
         elif "BR_TOTTI" in cam_upper or "BW" in cam_upper:
-            empresa_especifica = "BR TOTTI LTDA / BW"
+            emp_alocada = "BR TOTTI LTDA / BW"
         elif "BG" in cam_upper or "ADESIVOS" in cam_upper:
-            empresa_especifica = "BG ADESIVOS LTDA"
-
-        if empresa_especifica:
-            registros.append({
-                'Arquivo': str(nome_arquivo),
-                'Caminho_Origem': str(caminho_completo),
-                'Data Emissao': f"01/{mes_num:02d}/2026",
-                'Mes_Num': mes_num,
-                'Descrição': f"Documento Fiscal ({nome_arquivo})",
-                'Tipo Operacao': tipo_op,
-                'Valor Total (R$)': float(valor_final),
-                'Empresa': empresa_especifica
-            })
+            emp_alocada = "BG ADESIVOS LTDA"
         else:
-            for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-                v_rateado = valor_final * emp_info['peso_grupo']
-                registros.append({
-                    'Arquivo': str(nome_arquivo),
-                    'Caminho_Origem': str(caminho_completo),
-                    'Data Emissao': f"01/{mes_num:02d}/2026",
-                    'Mes_Num': mes_num,
-                    'Descrição': f"Lançamento Rateado ({nome_arquivo})",
-                    'Tipo Operacao': tipo_op,
-                    'Valor Total (R$)': float(v_rateado),
-                    'Empresa': emp_nome
-                })
+            emp_alocada = "MCRTOTTI LTDA / BRA"
+
+        registros.append({
+            'Arquivo': str(nome_arquivo),
+            'Caminho_Origem': str(caminho_completo),
+            'Data Emissao': f"01/{mes_num:02d}/2026",
+            'Mes_Num': mes_num,
+            'Descrição': f"Lançamento Fiscal ({nome_arquivo})",
+            'Tipo Operacao': tipo_op,
+            'Valor Total (R$)': float(valor_final),
+            'Empresa': emp_alocada
+        })
     except Exception:
         pass
     return registros
@@ -221,27 +204,30 @@ def processar_zip_universal(zip_bytes: bytes) -> list:
     return dados
 
 # ==========================================
-# 5. CONTROLE LATERAL
+# 5. CONTROLE LATERAL COM RESET REAL
 # ==========================================
 st.sidebar.title("📥 Carga de Dados B.I.")
 arquivos_subidos = st.sidebar.file_uploader(
     "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_bi_v11"
+    key="upl_bi_v12"
 )
 
-btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v11")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v12")
 
-if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v11"):
-    if 'df_bi' in st.session_state:
-        del st.session_state['df_bi']
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v12"):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
     st.sidebar.success("Base limpa!")
     st.rerun()
 
 if btn_processar and arquivos_subidos:
+    # Limpa dados anteriores para não acumular nem duplicar valores
+    st.session_state['df_bi'] = pd.DataFrame()
+    
     novos_dados = []
-    with st.spinner("⏳ Mapeando Vendas e Compras..."):
+    with st.spinner("⏳ Mapeando lançamentos por empresa e mês..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -260,17 +246,12 @@ if btn_processar and arquivos_subidos:
         df_novos = pd.DataFrame(novos_dados)
         df_novos['Ano'] = 2026
         df_novos['Mês'] = df_novos['Mes_Num'].map(MESES_NOMES)
-
-        if 'df_bi' in st.session_state:
-            st.session_state['df_bi'] = pd.concat([st.session_state['df_bi'], df_novos], ignore_index=True)
-        else:
-            st.session_state['df_bi'] = df_novos
-
-        st.success(f"✅ {len(novos_dados)} registros carregados!")
+        st.session_state['df_bi'] = df_novos
+        st.success(f"✅ {len(novos_dados)} lançamentos únicos carregados!")
         gc.collect()
 
 # ==========================================
-# 6. DASHBOARD B.I. COM APURAÇÃO CORRIGIDA DE IMPOSTOS
+# 6. DASHBOARD B.I. COM APURAÇÃO MATEMÁTICA PURA
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
@@ -279,7 +260,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     st.sidebar.header("🎯 Filtros Globais")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v11")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v12")
 
     df_base_ano = df_bi[df_bi['Ano'] == ano_sel]
 
@@ -292,7 +273,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             "Empresa Ativa:",
             options=empresas_disp,
             default="TODAS AS EMPRESAS (GRUPO)",
-            key="pills_empresa_interativa_v11"
+            key="pills_empresa_interativa_v12"
         )
     except AttributeError:
         empresa_sel = st.radio(
@@ -300,7 +281,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=empresas_disp,
             index=0,
             horizontal=True,
-            key="radio_empresa_interativa_v11"
+            key="radio_empresa_interativa_v12"
         )
 
     if not empresa_sel:
@@ -321,7 +302,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             "Mês Ativo:",
             options=meses_ordenados,
             default="Consolidado Anual",
-            key="pills_mes_interativo_v11"
+            key="pills_mes_interativo_v12"
         )
     except AttributeError:
         mes_ativo = st.radio(
@@ -329,49 +310,43 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=meses_ordenados,
             index=0,
             horizontal=True,
-            key="radio_mes_interativo_v11"
+            key="radio_mes_interativo_v12"
         )
 
     if not mes_ativo:
         mes_ativo = "Consolidado Anual"
 
-    # Filtragem Final (Ano + Empresa + Mês)
+    # Filtragem Final estrita
     if mes_ativo != "Consolidado Anual":
         df_filtrado = df_base_ano_emp[df_base_ano_emp['Mês'] == mes_ativo]
     else:
         df_filtrado = df_base_ano_emp.copy()
 
-    # Totais operacionais do filtro ativo
+    # Totais financeiros da visão atual
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
     compras_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
 
-    # --- CÁLCULO RESTRITO AO CONJUNTO FILTRADO (SEM VAZAMENTO DE GLOBAL) ---
+    # CÁLCULO EXATO DE IMPOSTOS SOBRE OS REGISTROS DA VISÃO
     icms_val, pis_val, cofins_val, irpj_val, csll_val = 0.0, 0.0, 0.0, 0.0, 0.0
 
-    if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
-        emp_info = EMPRESAS_CONFIG[empresa_sel]
-        icms_val = fat_bruto * emp_info['icms']
-        pis_val = fat_bruto * emp_info['pis']
-        cofins_val = fat_bruto * emp_info['cofins']
-        irpj_val = fat_bruto * emp_info['irpj']
-        csll_val = fat_bruto * emp_info['csll']
-    else:
-        for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-            sub_df = df_filtrado[df_filtrado['Empresa'] == emp_nome]
-            if not sub_df.empty:
-                sub_fat = sub_df[sub_df['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
-                icms_val += sub_fat * emp_info['icms']
-                pis_val += sub_fat * emp_info['pis']
-                cofins_val += sub_fat * emp_info['cofins']
-                irpj_val += sub_fat * emp_info['irpj']
-                csll_val += sub_fat * emp_info['csll']
+    for idx, row in df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"].iterrows():
+        emp_nome = row['Empresa']
+        v_row = row['Valor Total (R$)']
+        
+        if emp_nome in EMPRESAS_CONFIG:
+            e_cfg = EMPRESAS_CONFIG[emp_nome]
+            icms_val += v_row * e_cfg['icms']
+            pis_val += v_row * e_cfg['pis']
+            cofins_val += v_row * e_cfg['cofins']
+            irpj_val += v_row * e_cfg['irpj']
+            csll_val += v_row * e_cfg['csll']
 
     piscofins_val = pis_val + cofins_val
     irpjcsll_val = irpj_val + csll_val
     tot_impostos = icms_val + piscofins_val + irpjcsll_val
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CARDS DE B.I. PADRONIZADOS E RECALCULADOS
+    # CARDS DE B.I. DINÂMICOS
     st.markdown("---")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
