@@ -16,7 +16,7 @@ st.set_page_config(
 
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# Estilização CSS com tamanho fixo padronizado para os 6 quadros de KPI
+# Estilização CSS para Cards de KPI Padronizados
 st.markdown("""
     <style>
     .kpi-card {
@@ -228,12 +228,12 @@ arquivos_subidos = st.sidebar.file_uploader(
     "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_bi_v8"
+    key="upl_bi_v9"
 )
 
-btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v8")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v9")
 
-if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v8"):
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v9"):
     if 'df_bi' in st.session_state:
         del st.session_state['df_bi']
     st.sidebar.success("Base limpa!")
@@ -270,7 +270,7 @@ if btn_processar and arquivos_subidos:
         gc.collect()
 
 # ==========================================
-# 6. DASHBOARD B.I. COM CARDS PADRONIZADOS
+# 6. DASHBOARD B.I. COM BOTÕES DE EMPRESA E MÊS NO TOPO
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
@@ -279,25 +279,48 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     st.sidebar.header("🎯 Filtros Globais")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v8")
-    
-    empresas_disp = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
-    empresa_sel = st.sidebar.selectbox("Entidade / Empresa", empresas_disp, key="sb_emp_bi_v8")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v9")
 
     df_base_ano = df_bi[df_bi['Ano'] == ano_sel]
-    if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
-        df_base_ano = df_base_ano[df_base_ano['Empresa'] == empresa_sel]
 
-    meses_ordenados = ["Consolidado Anual"] + sorted(list(df_base_ano['Mês'].unique()))
+    # --- CONTROLES DE BOTÕES LADO A LADO NO TOPO ---
+    st.markdown("### 🏢 Selecione a Empresa / Entidade:")
+    empresas_disp = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
     
-    st.markdown("### 🎛️ Clique no Mês para Filtrar o B.I.")
+    try:
+        empresa_sel = st.pills(
+            "Empresa Ativa:",
+            options=empresas_disp,
+            default="TODAS AS EMPRESAS (GRUPO)",
+            key="pills_empresa_interativa"
+        )
+    except AttributeError:
+        empresa_sel = st.radio(
+            "Selecione a Empresa Ativa:",
+            options=empresas_disp,
+            index=0,
+            horizontal=True,
+            key="radio_empresa_interativa"
+        )
+
+    if not empresa_sel:
+        empresa_sel = "TODAS AS EMPRESAS (GRUPO)"
+
+    # Filtragem preliminar de empresa
+    if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
+        df_base_ano_emp = df_base_ano[df_base_ano['Empresa'] == empresa_sel]
+    else:
+        df_base_ano_emp = df_base_ano.copy()
+
+    st.markdown("### 📅 Selecione o Mês:")
+    meses_ordenados = ["Consolidado Anual"] + sorted(list(df_base_ano_emp['Mês'].unique()))
     
     try:
         mes_ativo = st.pills(
             "Mês Ativo:",
             options=meses_ordenados,
             default="Consolidado Anual",
-            key="pills_mes_interativo_v8"
+            key="pills_mes_interativo_v9"
         )
     except AttributeError:
         mes_ativo = st.radio(
@@ -305,17 +328,19 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=meses_ordenados,
             index=0,
             horizontal=True,
-            key="radio_mes_interativo_v8"
+            key="radio_mes_interativo_v9"
         )
 
     if not mes_ativo:
         mes_ativo = "Consolidado Anual"
 
+    # Filtragem final de mês
     if mes_ativo != "Consolidado Anual":
-        df_filtrado = df_base_ano[df_base_ano['Mês'] == mes_ativo]
+        df_filtrado = df_base_ano_emp[df_base_ano_emp['Mês'] == mes_ativo]
     else:
-        df_filtrado = df_base_ano.copy()
+        df_filtrado = df_base_ano_emp.copy()
 
+    # Cálculos
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
     compras_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
 
@@ -402,10 +427,10 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     with tab1:
         st.subheader("📊 Balanço Mensal: Vendas (Saídas) vs Compras (Entradas)")
         
-        df_vendas_ano = df_base_ano[df_base_ano['Tipo Operacao'] == "Venda (Saida)"].groupby('Mês')['Valor Total (R$)'].sum().reset_index()
+        df_vendas_ano = df_base_ano_emp[df_base_ano_emp['Tipo Operacao'] == "Venda (Saida)"].groupby('Mês')['Valor Total (R$)'].sum().reset_index()
         df_vendas_ano.rename(columns={'Valor Total (R$)': 'Vendas'}, inplace=True)
         
-        df_compras_ano = df_base_ano[df_base_ano['Tipo Operacao'] == "Compra (Entrada)"].groupby('Mês')['Valor Total (R$)'].sum().reset_index()
+        df_compras_ano = df_base_ano_emp[df_base_ano_emp['Tipo Operacao'] == "Compra (Entrada)"].groupby('Mês')['Valor Total (R$)'].sum().reset_index()
         df_compras_ano.rename(columns={'Valor Total (R$)': 'Compras'}, inplace=True)
 
         df_dre = pd.merge(df_vendas_ano, df_compras_ano, on='Mês', how='outer').fillna(0.0)
@@ -413,7 +438,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
 
         c_chart1, c_chart2 = st.columns([2, 1])
         with c_chart1:
-            st.markdown("**Comparativo Operacional por Mês (R$)**")
+            st.markdown(f"**Comparativo Operacional por Mês ({empresa_sel})**")
             st.bar_chart(df_dre_indexed[['Vendas', 'Compras']])
         
         with c_chart2:
