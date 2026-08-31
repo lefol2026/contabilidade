@@ -47,7 +47,7 @@ st.markdown("""
 st.title("👑 Executive B.I. — Painel Consolidado de Inteligência Fiscal")
 
 # ==========================================
-# 2. TABELA TRIBUTÁRIA DAS EMPRESAS
+# 2. CONFIGURAÇÕES TRIBUTÁRIAS
 # ==========================================
 EMPRESAS_CONFIG = {
     "MCRTOTTI LTDA / BRA": {"icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108, "peso": 0.45},
@@ -77,7 +77,7 @@ def fmt_brl(val):
     return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 3. LEITURA E RATEIO AUTOMÁTICO DE ARQUIVOS
+# 3. EXTRAÇÃO CORRIGIDA DE DADOS
 # ==========================================
 def extrair_dados_arquivo(bytes_content, caminho_completo):
     registros = []
@@ -100,7 +100,8 @@ def extrair_dados_arquivo(bytes_content, caminho_completo):
                 try:
                     v_c = float(v.replace('.', '').replace(',', '.'))
                     if v_c > valor_final: valor_final = v_c
-                except: pass
+                except Exception:
+                    pass
 
         if valor_final == 0.0:
             numeros = re.findall(r'(\d+[\.\,]\d{2})', caminho_completo)
@@ -126,7 +127,8 @@ def extrair_dados_arquivo(bytes_content, caminho_completo):
                     'Mes_Num': mes_num, 'Tipo Operacao': tipo_op,
                     'Valor': float(valor_final * cfg['peso']), 'Empresa': emp
                 })
-    except: pass
+    except Exception:
+        pass
     return registros
 
 def processar_zip(zip_bytes):
@@ -134,50 +136,55 @@ def processar_zip(zip_bytes):
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
             for info in z.infolist():
-                if info.filename.startswith('__MACOSX') or info.is_dir(): continue
+                if info.filename.startswith('__MACOSX') or info.is_dir(): 
+                    continue
                 fn = info.filename.lower()
                 if fn.endswith(('.pdf', '.xml', '.csv', '.xlsx', '.xls', '.txt')):
-                    res = extrair_dados(z.read(info), info.filename)
-                    if res: dados.extend(res)
+                    res = extrair_dados_arquivo(z.read(info), info.filename)
+                    if res: 
+                        dados.extend(res)
                 elif fn.endswith(('.zip', '.rar')):
                     dados.extend(processar_zip(z.read(info)))
-    except: pass
+    except Exception:
+        pass
     return dados
 
 # ==========================================
-# 4. CONTROLE LATERAL
+# 4. PAINEL E CONTROLE LATERAL
 # ==========================================
 st.sidebar.title("📥 Carga de Arquivos")
 arquivos = st.sidebar.file_uploader("Suba o pacote ZIP/PDFs", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True)
 
 if st.sidebar.button("⚙️ Processar BI", type="primary"):
-    st.session_state['df_raw'] = pd.DataFrame()
     novos = []
     for arq in arquivos:
         b = arq.read()
-        if arq.name.lower().endswith('.zip'): novos.extend(processar_zip(b))
+        if arq.name.lower().endswith('.zip'): 
+            novos.extend(processar_zip(b))
         else:
             res = extrair_dados_arquivo(b, arq.name)
-            if res: novos.extend(res)
+            if res: 
+                novos.extend(res)
     
     if novos:
         df = pd.DataFrame(novos)
         df['Ano'] = 2026
         df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
         st.session_state['df_raw'] = df
-        st.success("Base atualizada!")
+        st.sidebar.success(f"✅ {len(novos)} lançamentos processados!")
+        st.rerun()
 
 if st.sidebar.button("🗑️ Resetar Tudo"):
     st.session_state.clear()
     st.rerun()
 
 # ==========================================
-# 5. EXECUÇÃO DO DASHBOARD (FILTRAGEM EM TEMPO REAL)
+# 5. RENDERIZAÇÃO DO BI
 # ==========================================
 if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     df_raw = st.session_state['df_raw']
 
-    # 1. BOTOES DE SELECAO NO TOPO
+    # 1. BOTEIS SUPERIORES
     st.markdown("### 🏢 Empresa:")
     empresas_opcoes = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
     empresa_sel = st.radio("Empresa:", empresas_opcoes, horizontal=True, label_visibility="collapsed", key="radio_emp")
@@ -186,20 +193,19 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     meses_opcoes = ["Consolidado Anual"] + sorted(list(df_raw['Mês'].unique()))
     mes_sel = st.radio("Mês:", meses_opcoes, horizontal=True, label_visibility="collapsed", key="radio_mes")
 
-    # 2. FILTRAGEM DIRETA SEM CACHE
+    # 2. FILTRAGEM
     df_filtrado = df_raw.copy()
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
     if mes_sel != "Consolidado Anual":
         df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
 
-    # 3. CÁLCULO EXATO DOS KPIS
+    # 3. KPIS
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor'].sum()
     compras_tot = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor'].sum()
 
     icms, piscofins, irpjcsll = 0.0, 0.0, 0.0
 
-    # Aplicação pontual da alíquota por empresa
     for _, row in df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"].iterrows():
         emp = row['Empresa']
         v = row['Valor']
@@ -212,7 +218,7 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     tot_impostos = icms + piscofins + irpjcsll
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # 4. CARDS DE RESULTADO
+    # 4. EXIBIÇÃO DE CARDS
     st.markdown("---")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
@@ -225,7 +231,7 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
 
     st.markdown("---")
 
-    # 5. GRÁFICOS DINÂMICOS
+    # 5. TABS
     t1, t2, t3 = st.tabs(["📈 DRE & Tendências", "🏢 Por Empresa", "📋 Auditoria"])
 
     with t1:
