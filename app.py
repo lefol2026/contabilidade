@@ -60,7 +60,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("👑 Executive B.I. — Painel Consolidado de Inteligência Fiscal")
-st.caption("Faturamento de Vendas, Compras de Entradas & Apuração Tributária")
+st.caption("Faturamento de Vendas, Compras de Entradas & Apuração Tributária Dinâmica")
 
 # ==========================================
 # 2. CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS
@@ -228,12 +228,12 @@ arquivos_subidos = st.sidebar.file_uploader(
     "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_bi_v9"
+    key="upl_bi_v10"
 )
 
-btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v9")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v10")
 
-if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v9"):
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v10"):
     if 'df_bi' in st.session_state:
         del st.session_state['df_bi']
     st.sidebar.success("Base limpa!")
@@ -270,7 +270,7 @@ if btn_processar and arquivos_subidos:
         gc.collect()
 
 # ==========================================
-# 6. DASHBOARD B.I. COM BOTÕES DE EMPRESA E MÊS NO TOPO
+# 6. DASHBOARD B.I. COM APURAÇÃO CORRETA POR EMPRESA
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
@@ -279,11 +279,11 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     st.sidebar.header("🎯 Filtros Globais")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v9")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v10")
 
     df_base_ano = df_bi[df_bi['Ano'] == ano_sel]
 
-    # --- CONTROLES DE BOTÕES LADO A LADO NO TOPO ---
+    # --- SELEÇÃO DE EMPRESA NO TOPO ---
     st.markdown("### 🏢 Selecione a Empresa / Entidade:")
     empresas_disp = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
     
@@ -292,7 +292,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             "Empresa Ativa:",
             options=empresas_disp,
             default="TODAS AS EMPRESAS (GRUPO)",
-            key="pills_empresa_interativa"
+            key="pills_empresa_interativa_v10"
         )
     except AttributeError:
         empresa_sel = st.radio(
@@ -300,18 +300,19 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=empresas_disp,
             index=0,
             horizontal=True,
-            key="radio_empresa_interativa"
+            key="radio_empresa_interativa_v10"
         )
 
     if not empresa_sel:
         empresa_sel = "TODAS AS EMPRESAS (GRUPO)"
 
-    # Filtragem preliminar de empresa
+    # Filtragem por Empresa
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_base_ano_emp = df_base_ano[df_base_ano['Empresa'] == empresa_sel]
     else:
         df_base_ano_emp = df_base_ano.copy()
 
+    # --- SELEÇÃO DE MÊS NO TOPO ---
     st.markdown("### 📅 Selecione o Mês:")
     meses_ordenados = ["Consolidado Anual"] + sorted(list(df_base_ano_emp['Mês'].unique()))
     
@@ -320,7 +321,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             "Mês Ativo:",
             options=meses_ordenados,
             default="Consolidado Anual",
-            key="pills_mes_interativo_v9"
+            key="pills_mes_interativo_v10"
         )
     except AttributeError:
         mes_ativo = st.radio(
@@ -328,40 +329,49 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             options=meses_ordenados,
             index=0,
             horizontal=True,
-            key="radio_mes_interativo_v9"
+            key="radio_mes_interativo_v10"
         )
 
     if not mes_ativo:
         mes_ativo = "Consolidado Anual"
 
-    # Filtragem final de mês
+    # Filtragem Final (Ano + Empresa + Mês)
     if mes_ativo != "Consolidado Anual":
         df_filtrado = df_base_ano_emp[df_base_ano_emp['Mês'] == mes_ativo]
     else:
         df_filtrado = df_base_ano_emp.copy()
 
-    # Cálculos
+    # Totais operacionais do filtro
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
     compras_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
 
+    # --- CÁLCULO DINÂMICO DOS IMPOSTOS RESPEITANDO A EMPRESA E O MÊS FILTRADOS ---
     icms_val, pis_val, cofins_val, irpj_val, csll_val = 0.0, 0.0, 0.0, 0.0, 0.0
 
-    for emp_nome, emp_info in EMPRESAS_CONFIG.items():
-        sub_df = df_filtrado[df_filtrado['Empresa'] == emp_nome]
-        if not sub_df.empty:
-            sub_fat = sub_df[sub_df['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
-            icms_val += sub_fat * emp_info['icms']
-            pis_val += sub_fat * emp_info['pis']
-            cofins_val += sub_fat * emp_info['cofins']
-            irpj_val += sub_fat * emp_info['irpj']
-            csll_val += sub_fat * emp_info['csll']
+    if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
+        emp_info = EMPRESAS_CONFIG[empresa_sel]
+        icms_val = fat_bruto * emp_info['icms']
+        pis_val = fat_bruto * emp_info['pis']
+        cofins_val = fat_bruto * emp_info['cofins']
+        irpj_val = fat_bruto * emp_info['irpj']
+        csll_val = fat_bruto * emp_info['csll']
+    else:
+        for emp_nome, emp_info in EMPRESAS_CONFIG.items():
+            sub_df = df_filtrado[df_filtrado['Empresa'] == emp_nome]
+            if not sub_df.empty:
+                sub_fat = sub_df[sub_df['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
+                icms_val += sub_fat * emp_info['icms']
+                pis_val += sub_fat * emp_info['pis']
+                cofins_val += sub_fat * emp_info['cofins']
+                irpj_val += sub_fat * emp_info['irpj']
+                csll_val += sub_fat * emp_info['csll']
 
     piscofins_val = pis_val + cofins_val
     irpjcsll_val = irpj_val + csll_val
     tot_impostos = icms_val + piscofins_val + irpjcsll_val
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CARDS DE B.I. PADRONIZADOS EM ALTURA E LARGURA
+    # CARDS DE B.I. PADRONIZADOS E RECALCULADOS
     st.markdown("---")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
@@ -442,7 +452,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
             st.bar_chart(df_dre_indexed[['Vendas', 'Compras']])
         
         with c_chart2:
-            st.markdown(f"**Sintético Tributário ({mes_ativo})**")
+            st.markdown(f"**Sintético Tributário ({empresa_sel} — {mes_ativo})**")
             df_trib_pie = pd.DataFrame({
                 'Imposto': ['ICMS TTS', 'PIS/COFINS', 'IRPJ/CSLL'],
                 'Valor (R$)': [icms_val, piscofins_val, irpjcsll_val]
