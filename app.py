@@ -2,18 +2,16 @@ import streamlit as st
 import pandas as pd
 import zipfile
 import io
-import re
 import gc
 
 st.set_page_config(page_title="Consolidação Grupo - Livro Caixa", layout="wide")
 
-# Força o navegador a não traduzir a página (evita erros de renderização)
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
 st.title("📊 Painel Consolidado do Grupo — Módulo Livro Caixa & DRE")
-st.caption("Modo de Leitura: Processamento direto de relatórios financeiros (PDF, CSV e Excel)")
+st.caption("Modo Estável: Leitura de Relatórios Financeiros (CSV e Excel)")
 
-# --- CONFIGURAÇÃO TRIBUTÁRIA DAS EMPRESAS ---
+# --- CONFIGURAÇÃO TRIBUTÁRIA ---
 EMPRESAS_CONFIG = {
     "RTX IMPORTS COMERCIAL LTDA": {
         "cnpjs": ["55175101000195"],
@@ -53,7 +51,6 @@ EMPRESAS_CONFIG = {
     }
 }
 
-# --- FUNÇÃO PARA PROCESSAR TABELAS/EXCEL/CSV ---
 def extrair_dados_tabela(file_bytes, nome_arquivo):
     registros = []
     try:
@@ -69,7 +66,6 @@ def extrair_dados_tabela(file_bytes, nome_arquivo):
         if df is not None and not df.empty:
             df.columns = [str(c).strip().upper() for c in df.columns]
             
-            # Identificação inteligente de colunas de Data, Valor e Descrição
             col_data = next((c for c in df.columns if any(k in c for k in ['DATA', 'DATE', 'EMISSAO'])), None)
             col_valor = next((c for c in df.columns if any(k in c for k in ['VALOR', 'VALOR TOTAL', 'VALOR (R$)', 'CREDITO', 'RECEITA'])), None)
             col_desc = next((c for c in df.columns if any(k in c for k in ['DESCRICAO', 'HISTORICO', 'EMPRESA', 'ORIGEM'])), None)
@@ -89,18 +85,17 @@ def extrair_dados_tabela(file_bytes, nome_arquivo):
                         desc_str = str(row[col_desc]) if col_desc and pd.notna(row[col_desc]) else nome_arquivo
 
                         registros.append({
-                            'Arquivo': nome_arquivo,
+                            'Arquivo': str(nome_arquivo),
                             'Data Emissao': dt_str,
                             'Descrição': desc_str,
                             'Tipo Operacao': "Venda (Saida)" if val_float >= 0 else "Compra (Entrada)",
-                            'Valor Total (R$)': abs(val_float),
-                            'Empresa': "MCRTOTTI LTDA / BRA"  # Padrão MCR
+                            'Valor Total (R$)': float(abs(val_float)),
+                            'Empresa': "MCRTOTTI LTDA / BRA"
                         })
     except Exception:
         pass
     return registros
 
-# --- FUNÇÃO PARA VARRER PACOTES ZIP ---
 def processar_zip_caixa(zip_bytes):
     dados = []
     try:
@@ -128,8 +123,8 @@ def processar_zip_caixa(zip_bytes):
         pass
     return dados
 
-# --- BARRA LATERAL ---
-st.sidebar.header("📁 Importar Livro Caixa / DRE")
+# --- INTERFACE ---
+st.sidebar.header("📁 Importar Livro Caixa/DRE")
 arquivos_subidos = st.sidebar.file_uploader(
     "Suba relatórios em Excel, CSV ou pacotes .ZIP", 
     type=["zip", "csv", "xlsx", "xls"], 
@@ -146,10 +141,10 @@ if st.sidebar.button("🗑️ Limpar Historico Acumulado", key="btn_clear"):
     st.sidebar.success("Historico apagado!")
     st.rerun()
 
-# --- PROCESSAMENTO PRINCIPAL ---
+# --- PROCESSAMENTO ---
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Lendo relatórios financeiros e consolidando faturamento..."):
+    with st.spinner("⏳ Lendo relatórios e consolidando faturamento..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -182,7 +177,7 @@ if btn_processar and arquivos_subidos:
     else:
         st.warning("⚠️ Nenhum arquivo de Livro Caixa válido (CSV/Excel) foi extraído.")
 
-# --- EXIBIÇÃO ---
+# --- EXIBIÇÃO DE RESULTADOS ---
 if 'df_caixa' in st.session_state and not st.session_state['df_caixa'].empty:
     df_caixa = st.session_state['df_caixa']
     
@@ -203,7 +198,6 @@ if 'df_caixa' in st.session_state and not st.session_state['df_caixa'].empty:
     df_mes = df_caixa[(df_caixa['Ano'] == ano_sel) & (df_caixa['Mes'] == mes_sel)]
     vendas_mes = df_mes[df_mes['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum() if not df_mes.empty else 0.0
     
-    # Cálculo aproximado dos tributos sobre a receita bruta do caixa
     piscofins = vendas_mes * 0.0365
     irpjcsll = vendas_mes * 0.0228
     icms = vendas_mes * 0.06
@@ -220,8 +214,10 @@ if 'df_caixa' in st.session_state and not st.session_state['df_caixa'].empty:
     st.markdown("---")
     st.subheader("📋 Lançamentos do Período")
     if not df_mes.empty:
-        st.write(df_mes[['Arquivo', 'Data Emissao', 'Descrição', 'Tipo Operacao', 'Valor Total (R$)']].to_html(index=False), unsafe_allow_html=True)
+        st.dataframe(
+            df_mes[['Arquivo', 'Data Emissao', 'Descrição', 'Tipo Operacao', 'Valor Total (R$)']], 
+            use_container_width=True,
+            key="df_display"
+        )
     else:
         st.info("Nenhum lançamento encontrado para o mês e ano selecionados.")
-else:
-    st.info("👈 Suba os arquivos do Livro Caixa (Excel/CSV) e clique em **➕ Processar Livro Caixa**.")
