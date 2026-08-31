@@ -6,7 +6,7 @@ import re
 import gc
 
 # ==========================================
-# 1. CONFIGURAÇÃO DA PÁGINA & ESTILIZAÇÃO
+# 1. CONFIGURAÇÃO DA PÁGINA & ESTILIZAÇÃO CSS
 # ==========================================
 st.set_page_config(
     page_title="Executive B.I. - Grupo BW/MCR", 
@@ -16,32 +16,45 @@ st.set_page_config(
 
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# Estilização CSS para Cards de KPI
+# Estilização CSS com tamanho fixo padronizado para os 6 quadros de KPI
 st.markdown("""
     <style>
     .kpi-card {
         background: #ffffff;
         border: 1px solid #e0e0e0;
         border-radius: 10px;
-        padding: 12px 18px;
+        padding: 10px 12px;
         box-shadow: 0px 2px 5px rgba(0,0,0,0.05);
+        height: 135px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        box-sizing: border-box;
     }
     .kpi-title {
-        font-size: 0.8rem;
+        font-size: 0.72rem;
         font-weight: 700;
-        color: #666;
+        color: #555;
         text-transform: uppercase;
-        margin-bottom: 4px;
+        line-height: 1.1;
+        height: 28px;
+        display: flex;
+        align-items: center;
     }
     .kpi-value {
-        font-size: 1.35rem;
+        font-size: 1.25rem;
         font-weight: 800;
         color: #111;
+        white-space: nowrap;
+        word-break: keep-all;
     }
     .kpi-sub {
-        font-size: 0.75rem;
+        font-size: 0.70rem;
         color: #00875A;
         font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -215,12 +228,12 @@ arquivos_subidos = st.sidebar.file_uploader(
     "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_bi_v7"
+    key="upl_bi_v8"
 )
 
-btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v7")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v8")
 
-if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v7"):
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v8"):
     if 'df_bi' in st.session_state:
         del st.session_state['df_bi']
     st.sidebar.success("Base limpa!")
@@ -257,7 +270,7 @@ if btn_processar and arquivos_subidos:
         gc.collect()
 
 # ==========================================
-# 6. DASHBOARD B.I. COM BOTÕES DE CLIQUE DIRETO
+# 6. DASHBOARD B.I. COM CARDS PADRONIZADOS
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
@@ -266,36 +279,33 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     st.sidebar.header("🎯 Filtros Globais")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v7")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v8")
     
     empresas_disp = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
-    empresa_sel = st.sidebar.selectbox("Entidade / Empresa", empresas_disp, key="sb_emp_bi_v7")
+    empresa_sel = st.sidebar.selectbox("Entidade / Empresa", empresas_disp, key="sb_emp_bi_v8")
 
     df_base_ano = df_bi[df_bi['Ano'] == ano_sel]
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_base_ano = df_base_ano[df_base_ano['Empresa'] == empresa_sel]
 
-    # --- BOTÕES LADO A LADO PARA CLIQUE RÁPIDO NO MÊS ---
     meses_ordenados = ["Consolidado Anual"] + sorted(list(df_base_ano['Mês'].unique()))
     
     st.markdown("### 🎛️ Clique no Mês para Filtrar o B.I.")
     
-    # Renderização de botões horizontais interativos
     try:
         mes_ativo = st.pills(
             "Mês Ativo:",
             options=meses_ordenados,
             default="Consolidado Anual",
-            key="pills_mes_interativo"
+            key="pills_mes_interativo_v8"
         )
     except AttributeError:
-        # Fallback para versões legadas
         mes_ativo = st.radio(
             "Selecione o Mês Ativo:",
             options=meses_ordenados,
             index=0,
             horizontal=True,
-            key="radio_mes_interativo"
+            key="radio_mes_interativo_v8"
         )
 
     if not mes_ativo:
@@ -306,7 +316,6 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     else:
         df_filtrado = df_base_ano.copy()
 
-    # Cálculos
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
     compras_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
 
@@ -327,14 +336,14 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     tot_impostos = icms_val + piscofins_val + irpjcsll_val
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CARDS DE B.I.
+    # CARDS DE B.I. PADRONIZADOS EM ALTURA E LARGURA
     st.markdown("---")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-title">💰 Faturamento</div>
+            <div class="kpi-title">💰 FATURAMENTO</div>
             <div class="kpi-value">{fmt_moeda(fat_bruto)}</div>
             <div class="kpi-sub">{fmt_brl(fat_bruto)}</div>
         </div>
@@ -342,8 +351,8 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
 
     with col2:
         st.markdown(f"""
-        <div class="kpi-card" style="border-left-color: #2E7D32;">
-            <div class="kpi-title">🛒 Compras (Entradas)</div>
+        <div class="kpi-card" style="border-left: 4px solid #2E7D32;">
+            <div class="kpi-title">🛒 COMPRAS</div>
             <div class="kpi-value">{fmt_moeda(compras_total)}</div>
             <div class="kpi-sub" style="color: #2E7D32;">{fmt_brl(compras_total)}</div>
         </div>
@@ -352,9 +361,9 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     with col3:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-title">🏛️ ICMS TTS (MG)</div>
+            <div class="kpi-title">🏛️ ICMS TTS</div>
             <div class="kpi-value">{fmt_moeda(icms_val)}</div>
-            <div class="kpi-sub">{(icms_val/fat_bruto*100 if fat_bruto>0 else 0):.2f}% da receita</div>
+            <div class="kpi-sub">{(icms_val/fat_bruto*100 if fat_bruto>0 else 0):.2f}% receita</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -363,7 +372,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
         <div class="kpi-card">
             <div class="kpi-title">📊 PIS / COFINS</div>
             <div class="kpi-value">{fmt_moeda(piscofins_val)}</div>
-            <div class="kpi-sub">3.65% Padrão Cumulativo</div>
+            <div class="kpi-sub">3.65% Cumulativo</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -378,8 +387,8 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
 
     with col6:
         st.markdown(f"""
-        <div class="kpi-card" style="border-left-color: #D32F2F;">
-            <div class="kpi-title">🚨 Total Impostos</div>
+        <div class="kpi-card" style="border-left: 4px solid #D32F2F;">
+            <div class="kpi-title">🚨 TOTAL IMPOSTOS</div>
             <div class="kpi-value">{fmt_moeda(tot_impostos)}</div>
             <div class="kpi-sub" style="color: #D32F2F;">Carga: {aliquota_efetiva:.2f}%</div>
         </div>
