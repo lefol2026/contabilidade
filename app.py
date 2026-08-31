@@ -6,7 +6,7 @@ import re
 import gc
 
 # ==========================================
-# 1. CONFIGURAÇÃO DA PÁGINA
+# 1. CONFIGURAÇÃO DA PÁGINA & ESTILIZAÇÃO
 # ==========================================
 st.set_page_config(
     page_title="Executive B.I. - Grupo BW/MCR", 
@@ -16,7 +16,7 @@ st.set_page_config(
 
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
-# Estilização CSS para Cards de KPI com métrica de Compras
+# Estilização CSS para Cards de KPI
 st.markdown("""
     <style>
     .kpi-card {
@@ -102,7 +102,7 @@ def fmt_brl(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 4. ENGINE DE EXTRAÇÃO COM CLASSIFICAÇÃO DE COMPRAS
+# 4. ENGINE DE EXTRAÇÃO
 # ==========================================
 def identificar_mes_por_caminho(caminho_completo: str) -> int:
     for pasta, mes_num in MAPA_PASTAS_MESES.items():
@@ -117,7 +117,6 @@ def extrair_dados_universal(bytes_content: bytes, caminho_completo: str) -> list
         mes_num = identificar_mes_por_caminho(caminho_completo)
         cam_upper = caminho_completo.upper()
         
-        # Identifica se o documento é de Entrada/Compra
         eh_entrada = any(term in cam_upper or term in raw_text.upper() for term in ['ENTRADA', 'COMPRA', 'FORNECEDOR', 'ENTRADAS'])
         tipo_op = "Compra (Entrada)" if eh_entrada else "Venda (Saida)"
         
@@ -216,12 +215,12 @@ arquivos_subidos = st.sidebar.file_uploader(
     "Upload do Pacote (.ZIP / PDFs / XMLs)", 
     type=["zip", "pdf", "csv", "xlsx", "xml"], 
     accept_multiple_files=True,
-    key="upl_bi_v6"
+    key="upl_bi_v7"
 )
 
-btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v6")
+btn_processar = st.sidebar.button("⚙️ Atualizar Dashboard BI", type="primary", key="btn_proc_v7")
 
-if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v6"):
+if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v7"):
     if 'df_bi' in st.session_state:
         del st.session_state['df_bi']
     st.sidebar.success("Base limpa!")
@@ -229,7 +228,7 @@ if st.sidebar.button("🗑️ Resetar Dados", key="btn_reset_v6"):
 
 if btn_processar and arquivos_subidos:
     novos_dados = []
-    with st.spinner("⏳ Mapeando Vendas e Compras (Entradas)..."):
+    with st.spinner("⏳ Mapeando Vendas e Compras..."):
         for arq in arquivos_subidos:
             try:
                 content = arq.read()
@@ -258,7 +257,7 @@ if btn_processar and arquivos_subidos:
         gc.collect()
 
 # ==========================================
-# 6. DASHBOARD B.I. COM CARDS DE COMPRAS
+# 6. DASHBOARD B.I. COM BOTÕES DE CLIQUE DIRETO
 # ==========================================
 if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     df_bi = st.session_state['df_bi']
@@ -267,31 +266,47 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     st.sidebar.header("🎯 Filtros Globais")
     
     anos_disp = sorted([int(a) for a in df_bi['Ano'].unique()])
-    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v6")
+    ano_sel = st.sidebar.selectbox("Ano Fiscal", anos_disp, index=len(anos_disp)-1, key="sb_ano_bi_v7")
     
     empresas_disp = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
-    empresa_sel = st.sidebar.selectbox("Entidade / Empresa", empresas_disp, key="sb_emp_bi_v6")
+    empresa_sel = st.sidebar.selectbox("Entidade / Empresa", empresas_disp, key="sb_emp_bi_v7")
 
     df_base_ano = df_bi[df_bi['Ano'] == ano_sel]
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_base_ano = df_base_ano[df_base_ano['Empresa'] == empresa_sel]
 
+    # --- BOTÕES LADO A LADO PARA CLIQUE RÁPIDO NO MÊS ---
     meses_ordenados = ["Consolidado Anual"] + sorted(list(df_base_ano['Mês'].unique()))
     
-    st.markdown("### 🎛️ Controle de Análise Mensal")
-    mes_ativo = st.select_slider(
-        "Arraste para selecionar o mês de análise:",
-        options=meses_ordenados,
-        value="Consolidado Anual",
-        key="slider_mes_interativo_v6"
-    )
+    st.markdown("### 🎛️ Clique no Mês para Filtrar o B.I.")
+    
+    # Renderização de botões horizontais interativos
+    try:
+        mes_ativo = st.pills(
+            "Mês Ativo:",
+            options=meses_ordenados,
+            default="Consolidado Anual",
+            key="pills_mes_interativo"
+        )
+    except AttributeError:
+        # Fallback para versões legadas
+        mes_ativo = st.radio(
+            "Selecione o Mês Ativo:",
+            options=meses_ordenados,
+            index=0,
+            horizontal=True,
+            key="radio_mes_interativo"
+        )
+
+    if not mes_ativo:
+        mes_ativo = "Consolidado Anual"
 
     if mes_ativo != "Consolidado Anual":
         df_filtrado = df_base_ano[df_base_ano['Mês'] == mes_ativo]
     else:
         df_filtrado = df_base_ano.copy()
 
-    # Separação entre Vendas (Saídas) e Compras (Entradas)
+    # Cálculos
     fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor Total (R$)'].sum()
     compras_total = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor Total (R$)'].sum()
 
@@ -312,7 +327,7 @@ if 'df_bi' in st.session_state and not st.session_state['df_bi'].empty:
     tot_impostos = icms_val + piscofins_val + irpjcsll_val
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CARDS DE B.I. (6 COLUNAS COM FATURAMENTO E COMPRAS)
+    # CARDS DE B.I.
     st.markdown("---")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
