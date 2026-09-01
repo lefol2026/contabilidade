@@ -9,42 +9,23 @@ import pandas as pd
 import streamlit as st
 
 # ==========================================
-# 1. CONFIGURAÇÃO DA PÁGINA & CSS
+# 1. CONFIGURAÇÃO DA PÁGINA & ESTADO DE MEMÓRIA
 # ==========================================
 st.set_page_config(
     page_title="Executive B.I. - Auditoria Fiscal",
     page_icon="👑",
     layout="wide",
 )
-st.markdown(
-    '<meta name="google" content="notranslate">', unsafe_allow_html=True
-)
 
-st.markdown(
-    """
-    <style>
-    .kpi-card {
-        background: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        padding: 10px 12px;
-        box-shadow: 0px 2px 4px rgba(0,0,0,0.05);
-        height: 130px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-    .kpi-title { font-size: 0.72rem; font-weight: 700; color: #555; text-transform: uppercase; }
-    .kpi-value { font-size: 1.25rem; font-weight: 800; color: #111; white-space: nowrap; }
-    .kpi-sub { font-size: 0.70rem; color: #00875A; font-weight: 600; }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
-
-# Inicialização da memória do Streamlit
+# Inicializa o estado persistente do app
 if "df_raw" not in st.session_state:
-    st.session_state["df_raw"] = None
+    st.session_state["df_raw"] = pd.DataFrame()
+
+if "arquivos_processados_ids" not in st.session_state:
+    st.session_state["arquivos_processados_ids"] = set()
+
+if "ultimo_arquivo_nome" not in st.session_state:
+    st.session_state["ultimo_arquivo_nome"] = "Nenhum"
 
 st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação com Google Drive")
 
@@ -132,7 +113,7 @@ def fmt_brl(val):
 
 
 # ==========================================
-# 3. EXTRAÇÃO E PARSER DE DADOS
+# 3. EXTRAÇÃO DE DADOS
 # ==========================================
 def extrair_dados_arquivo(
     bytes_content, caminho_completo, origem_dado="Livro Fiscal"
@@ -201,8 +182,8 @@ def extrair_dados_arquivo(
                     "Empresa": emp,
                     "Origem": origem_dado,
                 })
-    except Exception as e:
-        st.sidebar.error(f"Erro ao processar {caminho_completo}: {e}")
+    except Exception:
+        pass
     return registros
 
 
@@ -229,13 +210,13 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
                         dados.extend(res)
                 elif fn.endswith((".zip", ".rar")):
                     dados.extend(processar_zip(z.read(info), origem_dado))
-    except Exception as e:
-        st.sidebar.error(f"Erro no ZIP: {e}")
+    except Exception:
+        pass
     return dados
 
 
 # ==========================================
-# 4. INTEGRAÇÃO DRIVE
+# 4. DRIVE COM SISTEMA DE CHECKPOINT
 # ==========================================
 def obter_servico_gdrive():
     info = dict(st.secrets["gdrive"])
@@ -278,91 +259,141 @@ def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
                     "caminho": caminho_item,
                 })
     except Exception as e:
-        st.sidebar.error(f"Erro ao listar Google Drive: {e}")
+        st.sidebar.error(f"Erro ao mapear Drive: {e}")
     return arquivos_encontrados
 
 
-def carregar_dados_gdrive_rapido():
+def carregar_dados_gdrive_com_resumo():
     if "gdrive" not in st.secrets:
-        st.sidebar.error("❌ Credenciais [gdrive] ausentes no Secrets.")
-        return []
+        st.sidebar.error("❌ Seção [gdrive] não configurada no Secrets.")
+        return
 
     try:
         service, folder_id = obter_servico_gdrive()
-        files = listar_arquivos_recursivo(service, folder_id)
 
-        if not files:
-            st.sidebar.warning("⚠️ Nenhum arquivo legível encontrado na pasta.")
-            return []
+        with st.sidebar.status(
+            "🔎 Conectando e checando checkpoint...", expanded=True
+        ) as status:
+            files = listar_arquivos_recursivo(service, folder_id)
+            total = len(files)
 
-        novos = []
-        progress = st.sidebar.progress(0.0)
-        status_text = st.sidebar.empty()
-        total = len(files)
+            if total == 0:
+                status.update(
+                    label="⚠️ Nenhum arquivo encontrado na pasta!",
+                    state="error",
+                )
+                return
 
-        for idx, file in enumerate(files):
-            status_text.caption(
-                f"Lendo ({idx+1}/{total}): {file['name'][:20]}..."
+            # Filtra os arquivos que ainda faltam ser processados
+            arquivos_pendentes = [
+                f
+                for f in files
+                if f["id"] not in st.session_state["arquivos_processados_ids"]
+            ]
+            ja_processados = total - len(arquivos_pendentes)
+
+            status.write(
+                f"📊 Total no Drive: **{total}** | Já lidos: **{ja_processados}**"
             )
-            try:
-                request = service.files().get_media(fileId=file["id"])
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
-                fh.seek(0)
-                b = fh.read()
 
-                if file["name"].lower().endswith(".zip"):
-                    res = processar_zip(b, "NFs / Drive")
-                else:
-                    res = extrair_dados_arquivo(
-                        b, file["caminho"], "NFs / Drive"
+            if not arquivos_pendentes:
+                status.update(
+                    label="🎉 Todos os arquivos já foram baixados e processados!",
+                    state="complete",
+                )
+                return
+
+            status.write(f"⏳ Processando os {len(arquivos_pendentes)} restantes...")
+            progress_bar = st.sidebar.progress(0)
+            log_container = st.sidebar.container()
+
+            novos_registros = []
+
+            for idx, file in enumerate(arquivos_pendentes):
+                progress_bar.progress((idx + 1) / len(arquivos_pendentes))
+
+                try:
+                    request = service.files().get_media(fileId=file["id"])
+                    fh = io.BytesIO()
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                    fh.seek(0)
+                    b = fh.read()
+
+                    if file["name"].lower().endswith(".zip"):
+                        res = processar_zip(b, "NFs / Drive")
+                    else:
+                        res = extrair_dados_arquivo(
+                            b, file["caminho"], "NFs / Drive"
+                        )
+
+                    if res:
+                        novos_registros.extend(res)
+
+                    # --- SALVA O CHECKPOINT IMEDIATAMENTE NA SESSÃO ---
+                    st.session_state["arquivos_processados_ids"].add(file["id"])
+                    st.session_state["ultimo_arquivo_nome"] = file["name"]
+
+                    log_container.caption(
+                        f"✅ [{ja_processados + idx + 1}/{total}] {file['name'][:20]}"
+                    )
+                    del b, fh
+                except Exception as ex:
+                    log_container.caption(
+                        f"❌ Erro ao ler {file['name'][:15]}: {ex}"
                     )
 
-                if res:
-                    novos.extend(res)
+                if idx % 10 == 0:
+                    gc.collect()
 
-                del b, fh
-            except Exception as e:
-                st.sidebar.warning(f"Erro ao ler {file['name']}: {e}")
+            # Consolida os dados novos com os dados que já estavam na memória
+            if novos_registros:
+                df_novos = pd.DataFrame(novos_registros)
+                df_novos["Ano"] = 2026
+                df_novos["Mês"] = df_novos["Mes_Num"].map(MESES_NOMES)
 
-            progress.progress((idx + 1) / total)
-            if idx % 10 == 0:
-                gc.collect()
+                if st.session_state["df_raw"].empty:
+                    st.session_state["df_raw"] = df_novos
+                else:
+                    st.session_state["df_raw"] = pd.concat(
+                        [st.session_state["df_raw"], df_novos], ignore_index=True
+                    )
 
-        progress.empty()
-        status_text.empty()
-        return novos
+            status.update(label="🎉 Lote processado com sucesso!", state="complete")
+
     except Exception as e:
-        st.sidebar.error(f"Erro de conexão com o Drive: {e}")
-        return []
+        st.sidebar.error(f"Erro no processamento do Drive: {e}")
 
 
 # ==========================================
-# 5. CONTROLE LATERAL
+# 5. CONTROLE LATERAL E PAINEL DE STATUS
 # ==========================================
 st.sidebar.title("📥 Carga de Documentos")
 
+# PAINEL DE MONITORAMENTO DO CHECKPOINT
+with st.sidebar.expander("📌 Status do Carregamento", expanded=True):
+    total_linhas = (
+        len(st.session_state["df_raw"])
+        if not st.session_state["df_raw"].empty
+        else 0
+    )
+    total_arqs = len(st.session_state["arquivos_processados_ids"])
+
+    st.markdown(f"**Arquivos Lidos:** `{total_arqs}`")
+    st.markdown(f"**Último Arquivo:** `{st.session_state['ultimo_arquivo_nome']}`")
+    st.markdown(f"**Registros no Painel:** `{total_linhas}`")
+
 st.sidebar.markdown("#### Option 1: Google Drive (Integrado)")
-if st.sidebar.button("☁️ Baixar NFs do Google Drive"):
-    with st.spinner("Sincronizando com o Google Drive..."):
-        novos_drive = carregar_dados_gdrive_rapido()
-        if novos_drive:
-            df = pd.DataFrame(novos_drive)
-            df["Ano"] = 2026
-            df["Mês"] = df["Mes_Num"].map(MESES_NOMES)
-            st.session_state["df_raw"] = df
-            st.sidebar.success(f"✅ {len(novos_drive)} registros sincronizados!")
-            st.rerun()
-        else:
-            st.sidebar.error("❌ Nenhum dado extraído do Drive.")
+if st.sidebar.button("☁️ Baixar / Continuar Drive"):
+    carregar_dados_gdrive_com_resumo()
+    st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Option 2: Upload Manual (Livros / NFs)")
+st.sidebar.markdown("#### Option 2: Upload Manual")
 arquivos_livros = st.sidebar.file_uploader(
-    "Upload Manual (.ZIP / PDFs / XMLs)",
+    "Upload (.ZIP / PDFs / XMLs)",
     type=["zip", "pdf", "csv", "xlsx", "xml"],
     accept_multiple_files=True,
 )
@@ -370,39 +401,35 @@ arquivos_livros = st.sidebar.file_uploader(
 if st.sidebar.button("⚙️ Processar Upload Manual", type="primary"):
     novos = []
     if arquivos_livros:
-        st.sidebar.write("---")
-        st.sidebar.write("🔍 **Diagnóstico de Leitura:**")
-        with st.spinner("Processando arquivos locais..."):
-            for arq in arquivos_livros:
-                b = arq.read()
-                st.sidebar.text(f"📄 {arq.name} ({len(b)} bytes)")
-
-                if arq.name.lower().endswith(".zip"):
-                    res = processar_zip(b, "Livro Fiscal")
-                else:
-                    res = extrair_dados_arquivo(b, arq.name, "Livro Fiscal")
-
-                st.sidebar.caption(
-                    f"   └─ Registros gerados: {len(res) if res else 0}"
-                )
-
-                if res:
-                    novos.extend(res)
+        for arq in arquivos_livros:
+            b = arq.read()
+            if arq.name.lower().endswith(".zip"):
+                res = processar_zip(b, "Livro Fiscal")
+            else:
+                res = extrair_dados_arquivo(b, arq.name, "Livro Fiscal")
+            if res:
+                novos.extend(res)
+            st.session_state["ultimo_arquivo_nome"] = arq.name
 
     if novos:
-        df = pd.DataFrame(novos)
-        df["Ano"] = 2026
-        df["Mês"] = df["Mes_Num"].map(MESES_NOMES)
-        st.session_state["df_raw"] = df
-        st.sidebar.success(f"✅ Total: {len(novos)} registros!")
-        st.rerun()
-    else:
-        st.sidebar.error(
-            "❌ 0 registros extraídos! Verifique a mensagem de erro acima."
-        )
+        df_novos = pd.DataFrame(novos)
+        df_novos["Ano"] = 2026
+        df_novos["Mês"] = df_novos["Mes_Num"].map(MESES_NOMES)
 
-if st.sidebar.button("🗑️ Redefinir Tudo"):
-    st.session_state.clear()
+        if st.session_state["df_raw"].empty:
+            st.session_state["df_raw"] = df_novos
+        else:
+            st.session_state["df_raw"] = pd.concat(
+                [st.session_state["df_raw"], df_novos], ignore_index=True
+            )
+
+        st.sidebar.success(f"✅ {len(novos)} registros adicionados!")
+        st.rerun()
+
+if st.sidebar.button("🗑️ Redefinir / Limpar Estado"):
+    st.session_state["df_raw"] = pd.DataFrame()
+    st.session_state["arquivos_processados_ids"] = set()
+    st.session_state["ultimo_arquivo_nome"] = "Nenhum"
     st.rerun()
 
 # ==========================================
@@ -608,6 +635,5 @@ if (
 
 else:
     st.info(
-        "👈 Clique em **☁️ Baixar NFs do Google Drive** na barra lateral ou"
-        " faça o upload manual de arquivos."
+        "👈 Clique em **☁️ Baixar / Continuar Drive** na barra lateral para iniciar a leitura."
     )
