@@ -8,7 +8,7 @@ import gc
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA & CSS
 # ==========================================
-st.set_page_config(page_title="Executive B.I. - Grupo BW/MCR", page_icon="👑", layout="wide")
+st.set_page_config(page_title="Executive B.I. - Auditoria Fiscal", page_icon="👑", layout="wide")
 st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
 st.markdown("""
@@ -44,10 +44,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("👑 Executive B.I. — Painel Consolidado de Inteligência Fiscal")
+st.title("👑 Executive B.I. — Painel de Apuração & Auditoria Fiscal")
+st.caption("Confronto Automatizado: Livros Fiscais vs. NFs Emitidas (Tiny / Marketplaces)")
 
 # ==========================================
-# 2. CONFIGURAÇÕES TRIBUTÁRIAS
+# 2. PARÂMETROS TRIBUTÁRIOS
 # ==========================================
 EMPRESAS_CONFIG = {
     "MCRTOTTI LTDA / BRA": {"icms": 0.06, "pis": 0.0065, "cofins": 0.0300, "irpj": 0.0120, "csll": 0.0108, "peso": 0.45},
@@ -77,9 +78,9 @@ def fmt_brl(val):
     return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 3. EXTRAÇÃO CORRIGIDA DE DADOS
+# 3. LEITURA E PROCESSAMENTO
 # ==========================================
-def extrair_dados_arquivo(bytes_content, caminho_completo):
+def extrair_dados_arquivo(bytes_content, caminho_completo, origem_dado="Livro Fiscal"):
     registros = []
     try:
         raw_text = bytes_content.decode('latin-1', errors='ignore')
@@ -100,8 +101,7 @@ def extrair_dados_arquivo(bytes_content, caminho_completo):
                 try:
                     v_c = float(v.replace('.', '').replace(',', '.'))
                     if v_c > valor_final: valor_final = v_c
-                except Exception:
-                    pass
+                except: pass
 
         if valor_final == 0.0:
             numeros = re.findall(r'(\d+[\.\,]\d{2})', caminho_completo)
@@ -118,73 +118,84 @@ def extrair_dados_arquivo(bytes_content, caminho_completo):
             registros.append({
                 'Arquivo': nome_arq, 'Caminho': caminho_completo,
                 'Mes_Num': mes_num, 'Tipo Operacao': tipo_op,
-                'Valor': float(valor_final), 'Empresa': emp_especifica
+                'Valor': float(valor_final), 'Empresa': emp_especifica,
+                'Origem': origem_dado
             })
         else:
             for emp, cfg in EMPRESAS_CONFIG.items():
                 registros.append({
                     'Arquivo': nome_arq, 'Caminho': caminho_completo,
                     'Mes_Num': mes_num, 'Tipo Operacao': tipo_op,
-                    'Valor': float(valor_final * cfg['peso']), 'Empresa': emp
+                    'Valor': float(valor_final * cfg['peso']), 'Empresa': emp,
+                    'Origem': origem_dado
                 })
-    except Exception:
-        pass
+    except: pass
     return registros
 
-def processar_zip(zip_bytes):
+def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
     dados = []
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
             for info in z.infolist():
-                if info.filename.startswith('__MACOSX') or info.is_dir(): 
-                    continue
+                if info.filename.startswith('__MACOSX') or info.is_dir(): continue
                 fn = info.filename.lower()
                 if fn.endswith(('.pdf', '.xml', '.csv', '.xlsx', '.xls', '.txt')):
-                    res = extrair_dados_arquivo(z.read(info), info.filename)
-                    if res: 
-                        dados.extend(res)
+                    res = extrair_dados_arquivo(z.read(info), info.filename, origem_dado)
+                    if res: dados.extend(res)
                 elif fn.endswith(('.zip', '.rar')):
-                    dados.extend(processar_zip(z.read(info)))
-    except Exception:
-        pass
+                    dados.extend(processar_zip(z.read(info), origem_dado))
+    except: pass
     return dados
 
 # ==========================================
-# 4. PAINEL E CONTROLE LATERAL
+# 4. CONTROLE LATERAL (CARGA DUPLA)
 # ==========================================
-st.sidebar.title("📥 Carga de Arquivos")
-arquivos = st.sidebar.file_uploader("Suba o pacote ZIP/PDFs", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True)
+st.sidebar.title("📥 Carga de Documentos")
 
-if st.sidebar.button("⚙️ Processar BI", type="primary"):
+st.sidebar.markdown("#### 1. Livros Fiscais (PDF / ZIP)")
+arquivos_livros = st.sidebar.file_uploader("Livros Fiscais", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True, key="upl_livros")
+
+st.sidebar.markdown("#### 2. NFs / ERP / Tiny (XML / ZIP / CSV)")
+arquivos_nfs = st.sidebar.file_uploader("NFs Emitidas (Tiny/Plataformas)", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True, key="upl_nfs")
+
+if st.sidebar.button("⚙️ Processar & Confrontar B.I.", type="primary"):
     novos = []
-    for arq in arquivos:
-        b = arq.read()
-        if arq.name.lower().endswith('.zip'): 
-            novos.extend(processar_zip(b))
-        else:
-            res = extrair_dados_arquivo(b, arq.name)
-            if res: 
-                novos.extend(res)
     
+    if arquivos_livros:
+        for arq in arquivos_livros:
+            b = arq.read()
+            if arq.name.lower().endswith('.zip'): novos.extend(processar_zip(b, "Livro Fiscal"))
+            else:
+                res = extrair_dados_arquivo(b, arq.name, "Livro Fiscal")
+                if res: novos.extend(res)
+
+    if arquivos_nfs:
+        for arq in arquivos_nfs:
+            b = arq.read()
+            if arq.name.lower().endswith('.zip'): novos.extend(processar_zip(b, "NFs / ERP"))
+            else:
+                res = extrair_dados_arquivo(b, arq.name, "NFs / ERP")
+                if res: novos.extend(res)
+
     if novos:
         df = pd.DataFrame(novos)
         df['Ano'] = 2026
         df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
         st.session_state['df_raw'] = df
-        st.sidebar.success(f"✅ {len(novos)} lançamentos processados!")
+        st.sidebar.success(f"✅ {len(novos)} registros processados!")
         st.rerun()
 
-if st.sidebar.button("🗑️ Resetar Tudo"):
+if st.sidebar.button("🗑️ Redefinir Tudo"):
     st.session_state.clear()
     st.rerun()
 
 # ==========================================
-# 5. RENDERIZAÇÃO DO BI
+# 5. DASHBOARD & CONCILIAÇÃO
 # ==========================================
 if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     df_raw = st.session_state['df_raw']
 
-    # 1. BOTEIS SUPERIORES
+    # SELEÇÃO SUPERIOR
     st.markdown("### 🏢 Empresa:")
     empresas_opcoes = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
     empresa_sel = st.radio("Empresa:", empresas_opcoes, horizontal=True, label_visibility="collapsed", key="radio_emp")
@@ -193,20 +204,20 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     meses_opcoes = ["Consolidado Anual"] + sorted(list(df_raw['Mês'].unique()))
     mes_sel = st.radio("Mês:", meses_opcoes, horizontal=True, label_visibility="collapsed", key="radio_mes")
 
-    # 2. FILTRAGEM
+    # FILTRAGEM
     df_filtrado = df_raw.copy()
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
     if mes_sel != "Consolidado Anual":
         df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
 
-    # 3. KPIS
-    fat_bruto = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]['Valor'].sum()
+    # CÁLCULOS
+    df_vendas = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]
+    fat_bruto = df_vendas['Valor'].sum()
     compras_tot = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor'].sum()
 
     icms, piscofins, irpjcsll = 0.0, 0.0, 0.0
-
-    for _, row in df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"].iterrows():
+    for _, row in df_vendas.iterrows():
         emp = row['Empresa']
         v = row['Valor']
         if emp in EMPRESAS_CONFIG:
@@ -218,7 +229,7 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     tot_impostos = icms + piscofins + irpjcsll
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # 4. EXIBIÇÃO DE CARDS
+    # CARDS
     st.markdown("---")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
@@ -231,8 +242,8 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
 
     st.markdown("---")
 
-    # 5. TABS
-    t1, t2, t3 = st.tabs(["📈 DRE & Tendências", "🏢 Por Empresa", "📋 Auditoria"])
+    # TABS EXECUTIVAS
+    t1, t2, t3, t4 = st.tabs(["📈 DRE & Tendências", "🔍 Conciliação (Livro vs ERP)", "🏢 Por Empresa", "📋 Auditoria"])
 
     with t1:
         g1, g2 = st.columns([2, 1])
@@ -248,12 +259,24 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
             st.bar_chart(df_t, color="#FF8F00")
 
     with t2:
+        st.subheader("🔍 Confronto de Dados: Livro Fiscal vs. NFs ERP/Tiny")
+        df_conc = df_filtrado.groupby(['Mês', 'Origem'])['Valor'].sum().unstack(fill_value=0)
+        
+        if "Livro Fiscal" not in df_conc.columns: df_conc["Livro Fiscal"] = 0.0
+        if "NFs / ERP" not in df_conc.columns: df_conc["NFs / ERP"] = 0.0
+            
+        df_conc['Divergência (R$)'] = df_conc['Livro Fiscal'] - df_conc['NFs / ERP']
+        
+        st.dataframe(df_conc.style.format("R$ {:,.2f}"), use_container_width=True)
+        st.bar_chart(df_conc[["Livro Fiscal", "NFs / ERP"]])
+
+    with t3:
         st.markdown("**Faturamento por Empresa**")
         df_e = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"].groupby('Empresa')['Valor'].sum().reset_index()
         st.bar_chart(df_e.set_index('Empresa')['Valor'], color="#43A047")
 
-    with t3:
-        st.dataframe(df_filtrado[['Arquivo', 'Mês', 'Empresa', 'Tipo Operacao', 'Valor']], use_container_width=True)
+    with t4:
+        st.dataframe(df_filtrado[['Arquivo', 'Origem', 'Mês', 'Empresa', 'Tipo Operacao', 'Valor']], use_container_width=True)
 
 else:
-    st.info("👈 Envie o arquivo ZIP na barra lateral e clique em **⚙️ Processar BI**.")
+    st.info("👈 Faça o upload dos arquivos na barra lateral e clique em **⚙️ Processar & Confrontar B.I.**.")
