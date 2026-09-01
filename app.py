@@ -66,7 +66,7 @@ def fmt_brl(val):
     return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 3. EXTRAÇÃO E PARSER DE DADOS
+# 3. EXTRAÇÃO DE REGISTROS
 # ==========================================
 def extrair_dados_arquivo(bytes_content, caminho_completo, origem_dado="Livro Fiscal"):
     registros = []
@@ -89,7 +89,8 @@ def extrair_dados_arquivo(bytes_content, caminho_completo, origem_dado="Livro Fi
                 try:
                     v_c = float(v.replace('.', '').replace(',', '.'))
                     if v_c > valor_final: valor_final = v_c
-                except: pass
+                except Exception:
+                    pass
 
         if valor_final == 0.0:
             numeros = re.findall(r'(\d+[\.\,]\d{2})', caminho_completo)
@@ -117,7 +118,8 @@ def extrair_dados_arquivo(bytes_content, caminho_completo, origem_dado="Livro Fi
                     'Valor': float(valor_final * cfg['peso']), 'Empresa': emp,
                     'Origem': origem_dado
                 })
-    except: pass
+    except Exception:
+        pass
     return registros
 
 def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
@@ -132,37 +134,65 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
                     if res: dados.extend(res)
                 elif fn.endswith(('.zip', '.rar')):
                     dados.extend(processar_zip(z.read(info), origem_dado))
-    except: pass
+    except Exception:
+        pass
     return dados
 
 # ==========================================
-# 4. INTEGRAÇÃO COM GOOGLE DRIVE (PROTEGIDA)
+# 4. LEITURA DRIVE PROTEGIDA
 # ==========================================
+def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
+    arquivos_encontrados = []
+    try:
+        query = f"'{folder_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name, mimeType)", pageSize=1000).execute()
+        items = results.get('files', [])
+
+        for item in items:
+            mime = item.get('mimeType', '')
+            caminho_item = f"{caminho_atual}/{item['name']}" if caminho_atual else item['name']
+
+            if mime == 'application/vnd.google-apps.folder':
+                arquivos_encontrados.extend(listar_arquivos_recursivo(service, item['id'], caminho_item))
+            elif not mime.startswith('application/vnd.google-apps.'):
+                arquivos_encontrados.append({
+                    'id': item['id'],
+                    'name': item['name'],
+                    'caminho': caminho_item
+                })
+    except Exception as e:
+        st.sidebar.error(f"Erro na varredura da pasta {folder_id}: {e}")
+    return arquivos_encontrados
+
 def carregar_dados_gdrive():
     if "gdrive" not in st.secrets:
-        st.sidebar.error("❌ Credenciais do Google Drive não configuradas nos Secrets do Streamlit.")
+        st.sidebar.error("❌ Bloco [gdrive] ausente no Secrets.")
         return []
         
     try:
         info = dict(st.secrets["gdrive"])
         folder_id = info.pop("folder_id")
+        
+        # Garante parâmetro token_uri obrigatório
+        if "token_uri" not in info:
+            info["token_uri"] = "https://oauth2.googleapis.com/token"
+
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
         service = build('drive', 'v3', credentials=creds)
 
-        query = f"'{folder_id}' in parents and trashed = false"
-        results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
-        files = results.get('files', [])
+        files = listar_arquivos_recursivo(service, folder_id)
+        
+        if not files:
+            st.sidebar.warning("⚠️ Nenhum arquivo legível encontrado no Drive.")
+            return []
 
         novos = []
-        for file in files:
-            mime = file.get('mimeType', '')
-            
-            # Filtra pastas ou arquivos nativos do Google Docs/Sheets que não são baixáveis diretamente
-            if mime.startswith('application/vnd.google-apps.'):
-                continue
-                
+        progress_bar = st.sidebar.progress(0)
+        total_files = len(files)
+
+        for idx, file in enumerate(files):
             try:
                 request = service.files().get_media(fileId=file['id'])
                 fh = io.BytesIO()
@@ -176,32 +206,34 @@ def carregar_dados_gdrive():
                 if file['name'].lower().endswith('.zip'):
                     novos.extend(processar_zip(b, "NFs / Drive"))
                 else:
-                    res = extrair_dados_arquivo(b, file['name'], "NFs / Drive")
+                    res = extrair_dados_arquivo(b, file['caminho'], "NFs / Drive")
                     if res: novos.extend(res)
-            except Exception as file_err:
-                st.sidebar.warning(f"Ignorado {file['name']}: {file_err}")
+            except Exception:
+                pass
 
+            progress_bar.progress((idx + 1) / total_files)
+
+        progress_bar.empty()
         return novos
     except Exception as e:
-        st.sidebar.error(f"Erro de conexão com o Drive: {e}")
+        st.sidebar.error(f"Erro ao conectar com Google Drive: {e}")
         return []
 
 # ==========================================
-# 5. CONTROLE LATERAL
+# 5. CONTROLE LATERAL DE CARGA
 # ==========================================
 st.sidebar.title("📥 Carga de Documentos")
 
 st.sidebar.markdown("#### Option 1: Google Drive (Integrado)")
 if st.sidebar.button("☁️ Baixar NFs do Google Drive"):
-    with st.spinner("⏳ Acessando pasta do Google Drive..."):
+    with st.spinner("⏳ Baixando e analisando dados do Google Drive..."):
         novos_drive = carregar_dados_gdrive()
         if novos_drive:
             df = pd.DataFrame(novos_drive)
             df['Ano'] = 2026
             df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
             st.session_state['df_raw'] = df
-            st.sidebar.success(f"✅ {len(novos_drive)} notas sincronizadas do Drive!")
-            st.rerun()
+            st.sidebar.success(f"✅ {len(novos_drive)} registros sincronizados!")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Option 2: Upload Manual (Livros / NFs)")
@@ -223,14 +255,13 @@ if st.sidebar.button("⚙️ Processar Upload Manual", type="primary"):
         df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
         st.session_state['df_raw'] = df
         st.sidebar.success(f"✅ {len(novos)} registros carregados!")
-        st.rerun()
 
 if st.sidebar.button("🗑️ Redefinir Tudo"):
     st.session_state.clear()
     st.rerun()
 
 # ==========================================
-# 6. DASHBOARD E AUDITORIA
+# 6. EXIBIÇÃO DO DASHBOARD E RECALCULO
 # ==========================================
 if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     df_raw = st.session_state['df_raw']
@@ -243,12 +274,14 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     meses_opcoes = ["Consolidado Anual"] + sorted(list(df_raw['Mês'].unique()))
     mes_sel = st.radio("Mês:", meses_opcoes, horizontal=True, label_visibility="collapsed", key="radio_mes")
 
+    # FILTRAGEM
     df_filtrado = df_raw.copy()
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
     if mes_sel != "Consolidado Anual":
         df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
 
+    # OPERAÇÕES FINANCEIRAS
     df_vendas = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]
     fat_bruto = df_vendas['Valor'].sum()
     compras_tot = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor'].sum()
@@ -266,6 +299,7 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     tot_impostos = icms + piscofins + irpjcsll
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
+    # CARDS
     st.markdown("---")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
