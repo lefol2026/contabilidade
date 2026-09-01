@@ -4,6 +4,9 @@ import zipfile
 import io
 import re
 import gc
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA & CSS
@@ -24,28 +27,13 @@ st.markdown("""
         flex-direction: column;
         justify-content: space-between;
     }
-    .kpi-title {
-        font-size: 0.72rem;
-        font-weight: 700;
-        color: #555;
-        text-transform: uppercase;
-    }
-    .kpi-value {
-        font-size: 1.25rem;
-        font-weight: 800;
-        color: #111;
-        white-space: nowrap;
-    }
-    .kpi-sub {
-        font-size: 0.70rem;
-        color: #00875A;
-        font-weight: 600;
-    }
+    .kpi-title { font-size: 0.72rem; font-weight: 700; color: #555; text-transform: uppercase; }
+    .kpi-value { font-size: 1.25rem; font-weight: 800; color: #111; white-space: nowrap; }
+    .kpi-sub { font-size: 0.70rem; color: #00875A; font-weight: 600; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("👑 Executive B.I. — Painel de Apuração & Auditoria Fiscal")
-st.caption("Confronto Automatizado: Livros Fiscais vs. NFs Emitidas (Tiny / Marketplaces)")
+st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação com Google Drive")
 
 # ==========================================
 # 2. PARÂMETROS TRIBUTÁRIOS
@@ -78,7 +66,7 @@ def fmt_brl(val):
     return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 3. LEITURA E PROCESSAMENTO
+# 3. EXTRAÇÃO E PARSER DE DADOS
 # ==========================================
 def extrair_dados_arquivo(bytes_content, caminho_completo, origem_dado="Livro Fiscal"):
     registros = []
@@ -148,19 +136,70 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
     return dados
 
 # ==========================================
-# 4. CONTROLE LATERAL (CARGA DUPLA)
+# 4. INTEGRAÇÃO COM GOOGLE DRIVE
+# ==========================================
+def carregar_dados_gdrive():
+    if "gdrive" not in st.secrets:
+        st.sidebar.error("❌ Credenciais do Google Drive não configuradas nos Secrets do Streamlit.")
+        return []
+        
+    try:
+        info = dict(st.secrets["gdrive"])
+        folder_id = info.pop("folder_id")
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        service = build('drive', 'v3', credentials=creds)
+
+        query = f"'{folder_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
+        files = results.get('files', [])
+
+        novos = []
+        for file in files:
+            request = service.files().get_media(fileId=file['id'])
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            fh.seek(0)
+            b = fh.read()
+
+            if file['name'].lower().endswith('.zip'):
+                novos.extend(processar_zip(b, "NFs / Drive"))
+            else:
+                res = extrair_dados_arquivo(b, file['name'], "NFs / Drive")
+                if res: novos.extend(res)
+
+        return novos
+    except Exception as e:
+        st.sidebar.error(f"Erro de conexão com o Drive: {e}")
+        return []
+
+# ==========================================
+# 5. CONTROLE LATERAL
 # ==========================================
 st.sidebar.title("📥 Carga de Documentos")
 
-st.sidebar.markdown("#### 1. Livros Fiscais (PDF / ZIP)")
-arquivos_livros = st.sidebar.file_uploader("Livros Fiscais", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True, key="upl_livros")
+st.sidebar.markdown("#### Option 1: Google Drive (Integrado)")
+if st.sidebar.button("☁️ Baixar NFs do Google Drive"):
+    with st.spinner("⏳ Acessando pasta do Google Drive..."):
+        novos_drive = carregar_dados_gdrive()
+        if novos_drive:
+            df = pd.DataFrame(novos_drive)
+            df['Ano'] = 2026
+            df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
+            st.session_state['df_raw'] = df
+            st.sidebar.success(f"✅ {len(novos_drive)} notas sincronizadas do Drive!")
+            st.rerun()
 
-st.sidebar.markdown("#### 2. NFs / ERP / Tiny (XML / ZIP / CSV)")
-arquivos_nfs = st.sidebar.file_uploader("NFs Emitidas (Tiny/Plataformas)", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True, key="upl_nfs")
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Option 2: Upload Manual (Livros / NFs)")
+arquivos_livros = st.sidebar.file_uploader("Upload Manual (.ZIP / PDFs / XMLs)", type=["zip", "pdf", "csv", "xlsx", "xml"], accept_multiple_files=True)
 
-if st.sidebar.button("⚙️ Processar & Confrontar B.I.", type="primary"):
+if st.sidebar.button("⚙️ Processar Upload Manual", type="primary"):
     novos = []
-    
     if arquivos_livros:
         for arq in arquivos_livros:
             b = arq.read()
@@ -169,20 +208,12 @@ if st.sidebar.button("⚙️ Processar & Confrontar B.I.", type="primary"):
                 res = extrair_dados_arquivo(b, arq.name, "Livro Fiscal")
                 if res: novos.extend(res)
 
-    if arquivos_nfs:
-        for arq in arquivos_nfs:
-            b = arq.read()
-            if arq.name.lower().endswith('.zip'): novos.extend(processar_zip(b, "NFs / ERP"))
-            else:
-                res = extrair_dados_arquivo(b, arq.name, "NFs / ERP")
-                if res: novos.extend(res)
-
     if novos:
         df = pd.DataFrame(novos)
         df['Ano'] = 2026
         df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
         st.session_state['df_raw'] = df
-        st.sidebar.success(f"✅ {len(novos)} registros processados!")
+        st.sidebar.success(f"✅ {len(novos)} registros carregados!")
         st.rerun()
 
 if st.sidebar.button("🗑️ Redefinir Tudo"):
@@ -190,12 +221,11 @@ if st.sidebar.button("🗑️ Redefinir Tudo"):
     st.rerun()
 
 # ==========================================
-# 5. DASHBOARD & CONCILIAÇÃO
+# 6. DASHBOARD E AUDITORIA
 # ==========================================
 if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     df_raw = st.session_state['df_raw']
 
-    # SELEÇÃO SUPERIOR
     st.markdown("### 🏢 Empresa:")
     empresas_opcoes = ["TODAS AS EMPRESAS (GRUPO)"] + list(EMPRESAS_CONFIG.keys())
     empresa_sel = st.radio("Empresa:", empresas_opcoes, horizontal=True, label_visibility="collapsed", key="radio_emp")
@@ -204,14 +234,12 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     meses_opcoes = ["Consolidado Anual"] + sorted(list(df_raw['Mês'].unique()))
     mes_sel = st.radio("Mês:", meses_opcoes, horizontal=True, label_visibility="collapsed", key="radio_mes")
 
-    # FILTRAGEM
     df_filtrado = df_raw.copy()
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
     if mes_sel != "Consolidado Anual":
         df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
 
-    # CÁLCULOS
     df_vendas = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]
     fat_bruto = df_vendas['Valor'].sum()
     compras_tot = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor'].sum()
@@ -229,7 +257,6 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     tot_impostos = icms + piscofins + irpjcsll
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CARDS
     st.markdown("---")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
@@ -242,8 +269,7 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
 
     st.markdown("---")
 
-    # TABS EXECUTIVAS
-    t1, t2, t3, t4 = st.tabs(["📈 DRE & Tendências", "🔍 Conciliação (Livro vs ERP)", "🏢 Por Empresa", "📋 Auditoria"])
+    t1, t2, t3, t4 = st.tabs(["📈 DRE & Tendências", "🔍 Conciliação (Livro vs Drive)", "🏢 Por Empresa", "📋 Auditoria"])
 
     with t1:
         g1, g2 = st.columns([2, 1])
@@ -259,16 +285,16 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
             st.bar_chart(df_t, color="#FF8F00")
 
     with t2:
-        st.subheader("🔍 Confronto de Dados: Livro Fiscal vs. NFs ERP/Tiny")
+        st.subheader("🔍 Confronto: Livro Fiscal vs. Google Drive / ERP")
         df_conc = df_filtrado.groupby(['Mês', 'Origem'])['Valor'].sum().unstack(fill_value=0)
         
         if "Livro Fiscal" not in df_conc.columns: df_conc["Livro Fiscal"] = 0.0
-        if "NFs / ERP" not in df_conc.columns: df_conc["NFs / ERP"] = 0.0
+        if "NFs / Drive" not in df_conc.columns: df_conc["NFs / Drive"] = 0.0
             
-        df_conc['Divergência (R$)'] = df_conc['Livro Fiscal'] - df_conc['NFs / ERP']
+        df_conc['Divergência (R$)'] = df_conc['Livro Fiscal'] - df_conc['NFs / Drive']
         
         st.dataframe(df_conc.style.format("R$ {:,.2f}"), use_container_width=True)
-        st.bar_chart(df_conc[["Livro Fiscal", "NFs / ERP"]])
+        st.bar_chart(df_conc[["Livro Fiscal", "NFs / Drive"]])
 
     with t3:
         st.markdown("**Faturamento por Empresa**")
@@ -279,4 +305,4 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
         st.dataframe(df_filtrado[['Arquivo', 'Origem', 'Mês', 'Empresa', 'Tipo Operacao', 'Valor']], use_container_width=True)
 
 else:
-    st.info("👈 Faça o upload dos arquivos na barra lateral e clique em **⚙️ Processar & Confrontar B.I.**.")
+    st.info("👈 Clique em **☁️ Baixar NFs do Google Drive** na barra lateral ou faça o upload manual de arquivos.")
