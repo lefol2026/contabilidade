@@ -17,7 +17,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# Inicializa o estado persistente do app
 if "df_raw" not in st.session_state:
     st.session_state["df_raw"] = pd.DataFrame()
 
@@ -216,7 +215,7 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
 
 
 # ==========================================
-# 4. DRIVE COM SISTEMA DE CHECKPOINT
+# 4. DRIVE COM BATCH DE 50 ARQUIVOS
 # ==========================================
 def obter_servico_gdrive():
     info = dict(st.secrets["gdrive"])
@@ -263,7 +262,7 @@ def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
     return arquivos_encontrados
 
 
-def carregar_dados_gdrive_com_resumo():
+def carregar_dados_gdrive_lote(tamanho_lote=50):
     if "gdrive" not in st.secrets:
         st.sidebar.error("❌ Seção [gdrive] não configurada no Secrets.")
         return
@@ -279,12 +278,11 @@ def carregar_dados_gdrive_com_resumo():
 
             if total == 0:
                 status.update(
-                    label="⚠️ Nenhum arquivo encontrado na pasta!",
-                    state="error",
+                    label="⚠️ Nenhum arquivo encontrado!", state="error"
                 )
                 return
 
-            # Filtra os arquivos que ainda faltam ser processados
+            # Filtra os pendentes
             arquivos_pendentes = [
                 f
                 for f in files
@@ -292,25 +290,26 @@ def carregar_dados_gdrive_com_resumo():
             ]
             ja_processados = total - len(arquivos_pendentes)
 
-            status.write(
-                f"📊 Total no Drive: **{total}** | Já lidos: **{ja_processados}**"
-            )
-
             if not arquivos_pendentes:
                 status.update(
-                    label="🎉 Todos os arquivos já foram baixados e processados!",
+                    label=f"🎉 Todos os {total} arquivos já foram baixados!",
                     state="complete",
                 )
                 return
 
-            status.write(f"⏳ Processando os {len(arquivos_pendentes)} restantes...")
+            # PEGA APENAS O LOTE ATUAL (EX: 50 ARQUIVOS)
+            lote_atual = arquivos_pendentes[:tamanho_lote]
+            status.write(
+                f"📊 Processando lote: **{len(lote_atual)}** arquivos (Faltam"
+                f" {len(arquivos_pendentes)})"
+            )
+
             progress_bar = st.sidebar.progress(0)
             log_container = st.sidebar.container()
-
             novos_registros = []
 
-            for idx, file in enumerate(arquivos_pendentes):
-                progress_bar.progress((idx + 1) / len(arquivos_pendentes))
+            for idx, file in enumerate(lote_atual):
+                progress_bar.progress((idx + 1) / len(lote_atual))
 
                 try:
                     request = service.files().get_media(fileId=file["id"])
@@ -332,23 +331,21 @@ def carregar_dados_gdrive_com_resumo():
                     if res:
                         novos_registros.extend(res)
 
-                    # --- SALVA O CHECKPOINT IMEDIATAMENTE NA SESSÃO ---
+                    # MARCA O ARQUIVO COMO CONCLUÍDO
                     st.session_state["arquivos_processados_ids"].add(file["id"])
                     st.session_state["ultimo_arquivo_nome"] = file["name"]
 
                     log_container.caption(
-                        f"✅ [{ja_processados + idx + 1}/{total}] {file['name'][:20]}"
+                        f"✅ [{ja_processados + idx + 1}/{total}]"
+                        f" {file['name'][:20]}"
                     )
                     del b, fh
                 except Exception as ex:
                     log_container.caption(
-                        f"❌ Erro ao ler {file['name'][:15]}: {ex}"
+                        f"❌ Erro em {file['name'][:15]}: {ex}"
                     )
 
-                if idx % 10 == 0:
-                    gc.collect()
-
-            # Consolida os dados novos com os dados que já estavam na memória
+            # SALVA O LOTE NO DATAFRAME PRINCIPAL
             if novos_registros:
                 df_novos = pd.DataFrame(novos_registros)
                 df_novos["Ano"] = 2026
@@ -361,14 +358,20 @@ def carregar_dados_gdrive_com_resumo():
                         [st.session_state["df_raw"], df_novos], ignore_index=True
                     )
 
-            status.update(label="🎉 Lote processado com sucesso!", state="complete")
+            status.update(
+                label=(
+                    f"✅ Lote ok! ({ja_processados + len(lote_atual)}/{total}"
+                    " baixados)"
+                ),
+                state="complete",
+            )
 
     except Exception as e:
-        st.sidebar.error(f"Erro no processamento do Drive: {e}")
+        st.sidebar.error(f"Erro no Drive: {e}")
 
 
 # ==========================================
-# 5. CONTROLE LATERAL E PAINEL DE STATUS
+# 5. CONTROLE LATERAL
 # ==========================================
 st.sidebar.title("📥 Carga de Documentos")
 
@@ -381,13 +384,15 @@ with st.sidebar.expander("📌 Status do Carregamento", expanded=True):
     )
     total_arqs = len(st.session_state["arquivos_processados_ids"])
 
-    st.markdown(f"**Arquivos Lidos:** `{total_arqs}`")
-    st.markdown(f"**Último Arquivo:** `{st.session_state['ultimo_arquivo_nome']}`")
+    st.markdown(f"**Arquivos Lidos:** `{total_arqs} / 1341`")
+    st.markdown(
+        f"**Último Arquivo:** `{st.session_state['ultimo_arquivo_nome']}`"
+    )
     st.markdown(f"**Registros no Painel:** `{total_linhas}`")
 
 st.sidebar.markdown("#### Option 1: Google Drive (Integrado)")
-if st.sidebar.button("☁️ Baixar / Continuar Drive"):
-    carregar_dados_gdrive_com_resumo()
+if st.sidebar.button("⚡ Baixar Lote (50 arquivos)"):
+    carregar_dados_gdrive_lote(tamanho_lote=50)
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -635,5 +640,5 @@ if (
 
 else:
     st.info(
-        "👈 Clique em **☁️ Baixar / Continuar Drive** na barra lateral para iniciar a leitura."
+        "👈 Clique em **⚡ Baixar Lote (50 arquivos)** na barra lateral para iniciar a leitura por etapas."
     )
