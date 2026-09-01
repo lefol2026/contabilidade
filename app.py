@@ -136,7 +136,7 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
     return dados
 
 # ==========================================
-# 4. INTEGRAÇÃO COM GOOGLE DRIVE
+# 4. INTEGRAÇÃO COM GOOGLE DRIVE (PROTEGIDA)
 # ==========================================
 def carregar_dados_gdrive():
     if "gdrive" not in st.secrets:
@@ -157,20 +157,29 @@ def carregar_dados_gdrive():
 
         novos = []
         for file in files:
-            request = service.files().get_media(fileId=file['id'])
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            fh.seek(0)
-            b = fh.read()
+            mime = file.get('mimeType', '')
+            
+            # Filtra pastas ou arquivos nativos do Google Docs/Sheets que não são baixáveis diretamente
+            if mime.startswith('application/vnd.google-apps.'):
+                continue
+                
+            try:
+                request = service.files().get_media(fileId=file['id'])
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                fh.seek(0)
+                b = fh.read()
 
-            if file['name'].lower().endswith('.zip'):
-                novos.extend(processar_zip(b, "NFs / Drive"))
-            else:
-                res = extrair_dados_arquivo(b, file['name'], "NFs / Drive")
-                if res: novos.extend(res)
+                if file['name'].lower().endswith('.zip'):
+                    novos.extend(processar_zip(b, "NFs / Drive"))
+                else:
+                    res = extrair_dados_arquivo(b, file['name'], "NFs / Drive")
+                    if res: novos.extend(res)
+            except Exception as file_err:
+                st.sidebar.warning(f"Ignorado {file['name']}: {file_err}")
 
         return novos
     except Exception as e:
