@@ -42,7 +42,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Inicialização da variável global de estado (Evita o reset dos dados!)
+# Inicialização da memória do Streamlit
 if "df_raw" not in st.session_state:
     st.session_state["df_raw"] = None
 
@@ -201,8 +201,8 @@ def extrair_dados_arquivo(
                     "Empresa": emp,
                     "Origem": origem_dado,
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.error(f"Erro ao processar {caminho_completo}: {e}")
     return registros
 
 
@@ -229,13 +229,13 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
                         dados.extend(res)
                 elif fn.endswith((".zip", ".rar")):
                     dados.extend(processar_zip(z.read(info), origem_dado))
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.error(f"Erro no ZIP: {e}")
     return dados
 
 
 # ==========================================
-# 4. INTEGRAÇÃO DRIVE COM CACHE ANTI-TIMEOUT
+# 4. INTEGRAÇÃO DRIVE
 # ==========================================
 def obter_servico_gdrive():
     info = dict(st.secrets["gdrive"])
@@ -277,8 +277,8 @@ def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
                     "name": item["name"],
                     "caminho": caminho_item,
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.error(f"Erro ao listar Google Drive: {e}")
     return arquivos_encontrados
 
 
@@ -315,17 +315,18 @@ def carregar_dados_gdrive_rapido():
                 b = fh.read()
 
                 if file["name"].lower().endswith(".zip"):
-                    novos.extend(processar_zip(b, "NFs / Drive"))
+                    res = processar_zip(b, "NFs / Drive")
                 else:
                     res = extrair_dados_arquivo(
                         b, file["caminho"], "NFs / Drive"
                     )
-                    if res:
-                        novos.extend(res)
+
+                if res:
+                    novos.extend(res)
 
                 del b, fh
-            except Exception:
-                pass
+            except Exception as e:
+                st.sidebar.warning(f"Erro ao ler {file['name']}: {e}")
 
             progress.progress((idx + 1) / total)
             if idx % 10 == 0:
@@ -354,7 +355,9 @@ if st.sidebar.button("☁️ Baixar NFs do Google Drive"):
             df["Mês"] = df["Mes_Num"].map(MESES_NOMES)
             st.session_state["df_raw"] = df
             st.sidebar.success(f"✅ {len(novos_drive)} registros sincronizados!")
-            st.rerun()  # <--- CORREÇÃO: Força renderização imediata do Dashboard
+            st.rerun()
+        else:
+            st.sidebar.error("❌ Nenhum dado extraído do Drive.")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Option 2: Upload Manual (Livros / NFs)")
@@ -367,25 +370,36 @@ arquivos_livros = st.sidebar.file_uploader(
 if st.sidebar.button("⚙️ Processar Upload Manual", type="primary"):
     novos = []
     if arquivos_livros:
+        st.sidebar.write("---")
+        st.sidebar.write("🔍 **Diagnóstico de Leitura:**")
         with st.spinner("Processando arquivos locais..."):
             for arq in arquivos_livros:
                 b = arq.read()
+                st.sidebar.text(f"📄 {arq.name} ({len(b)} bytes)")
+
                 if arq.name.lower().endswith(".zip"):
-                    novos.extend(processar_zip(b, "Livro Fiscal"))
+                    res = processar_zip(b, "Livro Fiscal")
                 else:
                     res = extrair_dados_arquivo(b, arq.name, "Livro Fiscal")
-                    if res:
-                        novos.extend(res)
+
+                st.sidebar.caption(
+                    f"   └─ Registros gerados: {len(res) if res else 0}"
+                )
+
+                if res:
+                    novos.extend(res)
 
     if novos:
         df = pd.DataFrame(novos)
         df["Ano"] = 2026
         df["Mês"] = df["Mes_Num"].map(MESES_NOMES)
         st.session_state["df_raw"] = df
-        st.sidebar.success(f"✅ {len(novos)} registros carregados!")
-        st.rerun()  # <--- CORREÇÃO: Força renderização imediata do Dashboard
+        st.sidebar.success(f"✅ Total: {len(novos)} registros!")
+        st.rerun()
     else:
-        st.sidebar.warning("Nenhum dado válido extraído dos arquivos.")
+        st.sidebar.error(
+            "❌ 0 registros extraídos! Verifique a mensagem de erro acima."
+        )
 
 if st.sidebar.button("🗑️ Redefinir Tudo"):
     st.session_state.clear()
