@@ -66,7 +66,7 @@ def fmt_brl(val):
     return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ==========================================
-# 3. EXTRAÇÃO DE REGISTROS
+# 3. EXTRAÇÃO E PARSER DE DADOS
 # ==========================================
 def extrair_dados_arquivo(bytes_content, caminho_completo, origem_dado="Livro Fiscal"):
     registros = []
@@ -139,8 +139,18 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
     return dados
 
 # ==========================================
-# 4. LEITURA DRIVE PROTEGIDA
+# 4. INTEGRAÇÃO DRIVE COM CACHE ANTI-TIMEOUT
 # ==========================================
+def obter_servico_gdrive():
+    info = dict(st.secrets["gdrive"])
+    folder_id = info.pop("folder_id")
+    if "token_uri" not in info:
+        info["token_uri"] = "https://oauth2.googleapis.com/token"
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+    )
+    return build('drive', 'v3', credentials=creds), folder_id
+
 def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
     arquivos_encontrados = []
     try:
@@ -161,38 +171,29 @@ def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
                     'caminho': caminho_item
                 })
     except Exception as e:
-        st.sidebar.error(f"Erro na varredura da pasta {folder_id}: {e}")
+        pass
     return arquivos_encontrados
 
-def carregar_dados_gdrive():
+def carregar_dados_gdrive_rapido():
     if "gdrive" not in st.secrets:
-        st.sidebar.error("❌ Bloco [gdrive] ausente no Secrets.")
+        st.sidebar.error("❌ Credenciais [gdrive] ausentes no Secrets.")
         return []
-        
+
     try:
-        info = dict(st.secrets["gdrive"])
-        folder_id = info.pop("folder_id")
-        
-        # Garante parâmetro token_uri obrigatório
-        if "token_uri" not in info:
-            info["token_uri"] = "https://oauth2.googleapis.com/token"
-
-        creds = service_account.Credentials.from_service_account_info(
-            info, scopes=['https://www.googleapis.com/auth/drive.readonly']
-        )
-        service = build('drive', 'v3', credentials=creds)
-
+        service, folder_id = obter_servico_gdrive()
         files = listar_arquivos_recursivo(service, folder_id)
-        
+
         if not files:
-            st.sidebar.warning("⚠️ Nenhum arquivo legível encontrado no Drive.")
+            st.sidebar.warning("⚠️ Nenhum arquivo legível encontrado na pasta.")
             return []
 
         novos = []
-        progress_bar = st.sidebar.progress(0)
-        total_files = len(files)
+        progress = st.sidebar.progress(0.0)
+        status_text = st.sidebar.empty()
+        total = len(files)
 
         for idx, file in enumerate(files):
+            status_text.caption(f"Lendo ({idx+1}/{total}): {file['name'][:20]}...")
             try:
                 request = service.files().get_media(fileId=file['id'])
                 fh = io.BytesIO()
@@ -208,32 +209,36 @@ def carregar_dados_gdrive():
                 else:
                     res = extrair_dados_arquivo(b, file['caminho'], "NFs / Drive")
                     if res: novos.extend(res)
+                
+                del b, fh
             except Exception:
                 pass
 
-            progress_bar.progress((idx + 1) / total_files)
+            progress.progress((idx + 1) / total)
+            if idx % 10 == 0:
+                gc.collect()
 
-        progress_bar.empty()
+        progress.empty()
+        status_text.empty()
         return novos
     except Exception as e:
-        st.sidebar.error(f"Erro ao conectar com Google Drive: {e}")
+        st.sidebar.error(f"Erro de conexão com o Drive: {e}")
         return []
 
 # ==========================================
-# 5. CONTROLE LATERAL DE CARGA
+# 5. CONTROLE LATERAL
 # ==========================================
 st.sidebar.title("📥 Carga de Documentos")
 
 st.sidebar.markdown("#### Option 1: Google Drive (Integrado)")
 if st.sidebar.button("☁️ Baixar NFs do Google Drive"):
-    with st.spinner("⏳ Baixando e analisando dados do Google Drive..."):
-        novos_drive = carregar_dados_gdrive()
-        if novos_drive:
-            df = pd.DataFrame(novos_drive)
-            df['Ano'] = 2026
-            df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
-            st.session_state['df_raw'] = df
-            st.sidebar.success(f"✅ {len(novos_drive)} registros sincronizados!")
+    novos_drive = carregar_dados_gdrive_rapido()
+    if novos_drive:
+        df = pd.DataFrame(novos_drive)
+        df['Ano'] = 2026
+        df['Mês'] = df['Mes_Num'].map(MESES_NOMES)
+        st.session_state['df_raw'] = df
+        st.sidebar.success(f"✅ {len(novos_drive)} registros sincronizados!")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### Option 2: Upload Manual (Livros / NFs)")
@@ -261,7 +266,7 @@ if st.sidebar.button("🗑️ Redefinir Tudo"):
     st.rerun()
 
 # ==========================================
-# 6. EXIBIÇÃO DO DASHBOARD E RECALCULO
+# 6. DASHBOARD E AUDITORIA
 # ==========================================
 if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     df_raw = st.session_state['df_raw']
@@ -274,14 +279,12 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     meses_opcoes = ["Consolidado Anual"] + sorted(list(df_raw['Mês'].unique()))
     mes_sel = st.radio("Mês:", meses_opcoes, horizontal=True, label_visibility="collapsed", key="radio_mes")
 
-    # FILTRAGEM
     df_filtrado = df_raw.copy()
     if empresa_sel != "TODAS AS EMPRESAS (GRUPO)":
         df_filtrado = df_filtrado[df_filtrado['Empresa'] == empresa_sel]
     if mes_sel != "Consolidado Anual":
         df_filtrado = df_filtrado[df_filtrado['Mês'] == mes_sel]
 
-    # OPERAÇÕES FINANCEIRAS
     df_vendas = df_filtrado[df_filtrado['Tipo Operacao'] == "Venda (Saida)"]
     fat_bruto = df_vendas['Valor'].sum()
     compras_tot = df_filtrado[df_filtrado['Tipo Operacao'] == "Compra (Entrada)"]['Valor'].sum()
@@ -299,7 +302,6 @@ if 'df_raw' in st.session_state and not st.session_state['df_raw'].empty:
     tot_impostos = icms + piscofins + irpjcsll
     aliquota_efetiva = (tot_impostos / fat_bruto * 100) if fat_bruto > 0 else 0.0
 
-    # CARDS
     st.markdown("---")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
