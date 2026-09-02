@@ -1,5 +1,6 @@
 import gc
 import io
+import os
 import re
 import zipfile
 from google.oauth2 import service_account
@@ -7,6 +8,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import pandas as pd
 import streamlit as st
+
+# Arquivo para persistência dos dados em disco
+CACHE_FILE = "dados_cache.parquet"
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA & ESTADO DE MEMÓRIA
@@ -17,16 +21,35 @@ st.set_page_config(
     layout="wide",
 )
 
+
+# Função para carregar dados salvos em disco (Sobrevive a quedas de energia/reboots)
+def carregar_cache_disco():
+    if os.path.exists(CACHE_FILE):
+        try:
+            df = pd.read_parquet(CACHE_FILE)
+            ids = (
+                set(df["Arquivo_ID"].unique())
+                if "Arquivo_ID" in df.columns
+                else set()
+            )
+            ultimo = (
+                df["Arquivo"].iloc[-1]
+                if not df.empty and "Arquivo" in df.columns
+                else "Nenhum"
+            )
+            return df, ids, ultimo
+        except Exception:
+            pass
+    return pd.DataFrame(), set(), "Nenhum"
+
+
+# Carrega do disco na primeira execução
 if "df_raw" not in st.session_state:
-    st.session_state["df_raw"] = pd.DataFrame()
+    df_c, ids_c, ultimo_c = carregar_cache_disco()
+    st.session_state["df_raw"] = df_c
+    st.session_state["arquivos_processados_ids"] = ids_c
+    st.session_state["ultimo_arquivo_nome"] = ultimo_c
 
-if "arquivos_processados_ids" not in st.session_state:
-    st.session_state["arquivos_processados_ids"] = set()
-
-if "ultimo_arquivo_nome" not in st.session_state:
-    st.session_state["ultimo_arquivo_nome"] = "Nenhum"
-
-# Controle da automação em loop
 if "modo_automatico" not in st.session_state:
     st.session_state["modo_automatico"] = False
 
@@ -119,7 +142,7 @@ def fmt_brl(val):
 # 3. EXTRAÇÃO DE DADOS
 # ==========================================
 def extrair_dados_arquivo(
-    bytes_content, caminho_completo, origem_dado="Livro Fiscal"
+    bytes_content, caminho_completo, arq_id="", origem_dado="Livro Fiscal"
 ):
     registros = []
     try:
@@ -167,6 +190,7 @@ def extrair_dados_arquivo(
         if emp_especifica:
             registros.append({
                 "Arquivo": nome_arq,
+                "Arquivo_ID": arq_id,
                 "Caminho": caminho_completo,
                 "Mes_Num": mes_num,
                 "Tipo Operacao": tipo_op,
@@ -178,6 +202,7 @@ def extrair_dados_arquivo(
             for emp, cfg in EMPRESAS_CONFIG.items():
                 registros.append({
                     "Arquivo": nome_arq,
+                    "Arquivo_ID": arq_id,
                     "Caminho": caminho_completo,
                     "Mes_Num": mes_num,
                     "Tipo Operacao": tipo_op,
@@ -190,7 +215,7 @@ def extrair_dados_arquivo(
     return registros
 
 
-def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
+def processar_zip(zip_bytes, arq_id="", origem_dado="Livro Fiscal"):
     dados = []
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
@@ -207,19 +232,21 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
                     ".txt",
                 )):
                     res = extrair_dados_arquivo(
-                        z.read(info), info.filename, origem_dado
+                        z.read(info), info.filename, arq_id, origem_dado
                     )
                     if res:
                         dados.extend(res)
                 elif fn.endswith((".zip", ".rar")):
-                    dados.extend(processar_zip(z.read(info), origem_dado))
+                    dados.extend(
+                        processar_zip(z.read(info), arq_id, origem_dado)
+                    )
     except Exception:
         pass
     return dados
 
 
 # ==========================================
-# 4. DRIVE COM BATCH & AUTOMACÃO RECURSIVA
+# 4. INTEGRACAO DRIVE - BATCH DE 200
 # ==========================================
 def obter_servico_gdrive():
     info = dict(st.secrets["gdrive"])
@@ -266,7 +293,7 @@ def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
     return arquivos_encontrados
 
 
-def carregar_dados_gdrive_lote(tamanho_lote=50):
+def carregar_dados_gdrive_lote(tamanho_lote=200):
     if "gdrive" not in st.secrets:
         st.sidebar.error("❌ Seção [gdrive] não configurada no Secrets.")
         st.session_state["modo_automatico"] = False
@@ -276,7 +303,7 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
         service, folder_id = obter_servico_gdrive()
 
         with st.sidebar.status(
-            "⚡ Baixando lote automaticamente...", expanded=True
+            "⚡ Baixando lote de 200 arquivos...", expanded=True
         ) as status:
             files = listar_arquivos_recursivo(service, folder_id)
             total = len(files)
@@ -288,7 +315,6 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
                 st.session_state["modo_automatico"] = False
                 return False
 
-            # Filtra os pendentes
             arquivos_pendentes = [
                 f
                 for f in files
@@ -306,7 +332,7 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
 
             lote_atual = arquivos_pendentes[:tamanho_lote]
             status.write(
-                f"📥 Baixando **{len(lote_atual)}** arquivos... (Restam:"
+                f"📥 Baixando **{len(lote_atual)}** arquivos... (Faltam:"
                 f" {len(arquivos_pendentes) - len(lote_atual)})"
             )
 
@@ -328,10 +354,10 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
                     b = fh.read()
 
                     if file["name"].lower().endswith(".zip"):
-                        res = processar_zip(b, "NFs / Drive")
+                        res = processar_zip(b, file["id"], "NFs / Drive")
                     else:
                         res = extrair_dados_arquivo(
-                            b, file["caminho"], "NFs / Drive"
+                            b, file["caminho"], file["id"], "NFs / Drive"
                         )
 
                     if res:
@@ -362,13 +388,16 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
                         [st.session_state["df_raw"], df_novos], ignore_index=True
                     )
 
+                # SALVAMENTO EM DISCO APÓS CADA LOTE (Proteção contra queda de luz)
+                st.session_state["df_raw"].to_parquet(CACHE_FILE, index=False)
+
             status.update(
                 label=(
-                    f"✅ Lote salvo ({ja_processados + len(lote_atual)}/{total})"
+                    f"✅ Lote salvo! ({ja_processados + len(lote_atual)}/{total})"
                 ),
                 state="complete",
             )
-            return True  # Retorna True indicando que ainda há/havia trabalho no lote
+            return True
 
     except Exception as e:
         st.sidebar.error(f"Erro no Drive: {e}")
@@ -397,10 +426,9 @@ with st.sidebar.expander("📌 Status do Carregamento", expanded=True):
 
 st.sidebar.markdown("#### Opção 1: Google Drive (Integrado)")
 
-# BOTÕES DE CONTROLE DA AUTOMAÇÃO
 if not st.session_state["modo_automatico"]:
     if st.sidebar.button(
-        "▶️ Sincronizar Tudo (Automático)", type="primary"
+        "▶️ Sincronizar Automático (Lote 200)", type="primary"
     ):
         st.session_state["modo_automatico"] = True
         st.rerun()
@@ -423,9 +451,11 @@ if st.sidebar.button("⚙️ Processar Upload Manual"):
         for arq in arquivos_livros:
             b = arq.read()
             if arq.name.lower().endswith(".zip"):
-                res = processar_zip(b, "Livro Fiscal")
+                res = processar_zip(b, arq.name, "Livro Fiscal")
             else:
-                res = extrair_dados_arquivo(b, arq.name, "Livro Fiscal")
+                res = extrair_dados_arquivo(
+                    b, arq.name, arq.name, "Livro Fiscal"
+                )
             if res:
                 novos.extend(res)
             st.session_state["ultimo_arquivo_nome"] = arq.name
@@ -442,10 +472,13 @@ if st.sidebar.button("⚙️ Processar Upload Manual"):
                 [st.session_state["df_raw"], df_novos], ignore_index=True
             )
 
+        st.session_state["df_raw"].to_parquet(CACHE_FILE, index=False)
         st.sidebar.success(f"✅ {len(novos)} registros adicionados!")
         st.rerun()
 
 if st.sidebar.button("🗑️ Redefinir / Limpar Estado"):
+    if os.path.exists(CACHE_FILE):
+        os.remove(CACHE_FILE)
     st.session_state["df_raw"] = pd.DataFrame()
     st.session_state["arquivos_processados_ids"] = set()
     st.session_state["ultimo_arquivo_nome"] = "Nenhum"
@@ -456,9 +489,9 @@ if st.sidebar.button("🗑️ Redefinir / Limpar Estado"):
 # 6. EXECUÇÃO DA AUTOMAÇÃO EM LOOP
 # ==========================================
 if st.session_state["modo_automatico"]:
-    continuar = carregar_dados_gdrive_lote(tamanho_lote=50)
+    continuar = carregar_dados_gdrive_lote(tamanho_lote=200)
     if continuar:
-        st.rerun()  # <--- REINICIA O CÓDIGO AUTOMATICAMENTE PARA O PRÓXIMO LOTE
+        st.rerun()
 
 # ==========================================
 # 7. DASHBOARD E AUDITORIA
@@ -663,6 +696,6 @@ if (
 
 else:
     st.info(
-        "👈 Clique em **▶️ Sincronizar Tudo (Automático)** na barra lateral"
-        " para rodar a baixa contínua."
+        "👈 Clique em **▶️ Sincronizar Automático (Lote 200)** na barra lateral"
+        " para rodar a baixa contínua de 200 em 200 arquivos."
     )
