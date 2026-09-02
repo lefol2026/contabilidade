@@ -26,6 +26,10 @@ if "arquivos_processados_ids" not in st.session_state:
 if "ultimo_arquivo_nome" not in st.session_state:
     st.session_state["ultimo_arquivo_nome"] = "Nenhum"
 
+# Controle da automação em loop
+if "modo_automatico" not in st.session_state:
+    st.session_state["modo_automatico"] = False
+
 st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação com Google Drive")
 
 # ==========================================
@@ -215,7 +219,7 @@ def processar_zip(zip_bytes, origem_dado="Livro Fiscal"):
 
 
 # ==========================================
-# 4. DRIVE COM BATCH DE 50 ARQUIVOS
+# 4. DRIVE COM BATCH & AUTOMACÃO RECURSIVA
 # ==========================================
 def obter_servico_gdrive():
     info = dict(st.secrets["gdrive"])
@@ -265,13 +269,14 @@ def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
 def carregar_dados_gdrive_lote(tamanho_lote=50):
     if "gdrive" not in st.secrets:
         st.sidebar.error("❌ Seção [gdrive] não configurada no Secrets.")
-        return
+        st.session_state["modo_automatico"] = False
+        return False
 
     try:
         service, folder_id = obter_servico_gdrive()
 
         with st.sidebar.status(
-            "🔎 Conectando e checando checkpoint...", expanded=True
+            "⚡ Baixando lote automaticamente...", expanded=True
         ) as status:
             files = listar_arquivos_recursivo(service, folder_id)
             total = len(files)
@@ -280,7 +285,8 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
                 status.update(
                     label="⚠️ Nenhum arquivo encontrado!", state="error"
                 )
-                return
+                st.session_state["modo_automatico"] = False
+                return False
 
             # Filtra os pendentes
             arquivos_pendentes = [
@@ -292,16 +298,16 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
 
             if not arquivos_pendentes:
                 status.update(
-                    label=f"🎉 Todos os {total} arquivos já foram baixados!",
+                    label=f"🎉 Todos os {total} arquivos foram sincronizados!",
                     state="complete",
                 )
-                return
+                st.session_state["modo_automatico"] = False
+                return False
 
-            # PEGA APENAS O LOTE ATUAL (EX: 50 ARQUIVOS)
             lote_atual = arquivos_pendentes[:tamanho_lote]
             status.write(
-                f"📊 Processando lote: **{len(lote_atual)}** arquivos (Faltam"
-                f" {len(arquivos_pendentes)})"
+                f"📥 Baixando **{len(lote_atual)}** arquivos... (Restam:"
+                f" {len(arquivos_pendentes) - len(lote_atual)})"
             )
 
             progress_bar = st.sidebar.progress(0)
@@ -331,7 +337,6 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
                     if res:
                         novos_registros.extend(res)
 
-                    # MARCA O ARQUIVO COMO CONCLUÍDO
                     st.session_state["arquivos_processados_ids"].add(file["id"])
                     st.session_state["ultimo_arquivo_nome"] = file["name"]
 
@@ -345,7 +350,6 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
                         f"❌ Erro em {file['name'][:15]}: {ex}"
                     )
 
-            # SALVA O LOTE NO DATAFRAME PRINCIPAL
             if novos_registros:
                 df_novos = pd.DataFrame(novos_registros)
                 df_novos["Ano"] = 2026
@@ -360,14 +364,16 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
 
             status.update(
                 label=(
-                    f"✅ Lote ok! ({ja_processados + len(lote_atual)}/{total}"
-                    " baixados)"
+                    f"✅ Lote salvo ({ja_processados + len(lote_atual)}/{total})"
                 ),
                 state="complete",
             )
+            return True  # Retorna True indicando que ainda há/havia trabalho no lote
 
     except Exception as e:
         st.sidebar.error(f"Erro no Drive: {e}")
+        st.session_state["modo_automatico"] = False
+        return False
 
 
 # ==========================================
@@ -375,7 +381,6 @@ def carregar_dados_gdrive_lote(tamanho_lote=50):
 # ==========================================
 st.sidebar.title("📥 Carga de Documentos")
 
-# PAINEL DE MONITORAMENTO DO CHECKPOINT
 with st.sidebar.expander("📌 Status do Carregamento", expanded=True):
     total_linhas = (
         len(st.session_state["df_raw"])
@@ -390,20 +395,29 @@ with st.sidebar.expander("📌 Status do Carregamento", expanded=True):
     )
     st.markdown(f"**Registros no Painel:** `{total_linhas}`")
 
-st.sidebar.markdown("#### Option 1: Google Drive (Integrado)")
-if st.sidebar.button("⚡ Baixar Lote (50 arquivos)"):
-    carregar_dados_gdrive_lote(tamanho_lote=50)
-    st.rerun()
+st.sidebar.markdown("#### Opção 1: Google Drive (Integrado)")
+
+# BOTÕES DE CONTROLE DA AUTOMAÇÃO
+if not st.session_state["modo_automatico"]:
+    if st.sidebar.button(
+        "▶️ Sincronizar Tudo (Automático)", type="primary"
+    ):
+        st.session_state["modo_automatico"] = True
+        st.rerun()
+else:
+    if st.sidebar.button("⏹️ Pausar Sincronização"):
+        st.session_state["modo_automatico"] = False
+        st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Option 2: Upload Manual")
+st.sidebar.markdown("#### Opção 2: Upload Manual")
 arquivos_livros = st.sidebar.file_uploader(
     "Upload (.ZIP / PDFs / XMLs)",
     type=["zip", "pdf", "csv", "xlsx", "xml"],
     accept_multiple_files=True,
 )
 
-if st.sidebar.button("⚙️ Processar Upload Manual", type="primary"):
+if st.sidebar.button("⚙️ Processar Upload Manual"):
     novos = []
     if arquivos_livros:
         for arq in arquivos_livros:
@@ -435,10 +449,19 @@ if st.sidebar.button("🗑️ Redefinir / Limpar Estado"):
     st.session_state["df_raw"] = pd.DataFrame()
     st.session_state["arquivos_processados_ids"] = set()
     st.session_state["ultimo_arquivo_nome"] = "Nenhum"
+    st.session_state["modo_automatico"] = False
     st.rerun()
 
 # ==========================================
-# 6. DASHBOARD E AUDITORIA
+# 6. EXECUÇÃO DA AUTOMAÇÃO EM LOOP
+# ==========================================
+if st.session_state["modo_automatico"]:
+    continuar = carregar_dados_gdrive_lote(tamanho_lote=50)
+    if continuar:
+        st.rerun()  # <--- REINICIA O CÓDIGO AUTOMATICAMENTE PARA O PRÓXIMO LOTE
+
+# ==========================================
+# 7. DASHBOARD E AUDITORIA
 # ==========================================
 if (
     "df_raw" in st.session_state
@@ -640,5 +663,6 @@ if (
 
 else:
     st.info(
-        "👈 Clique em **⚡ Baixar Lote (50 arquivos)** na barra lateral para iniciar a leitura por etapas."
+        "👈 Clique em **▶️ Sincronizar Tudo (Automático)** na barra lateral"
+        " para rodar a baixa contínua."
     )
