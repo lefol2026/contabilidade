@@ -1,7 +1,9 @@
 import io
+import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+import tomllib  # Python 3.11+ ou use 'import toml'
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -14,11 +16,8 @@ try:
 except ImportError:
     HAS_PYPDF = False
 
-# ==========================================
-# 1. CONFIGURAÇÕES COM SEU LINK DO DRIVE
-# ==========================================
 LINK_OU_ID_DO_DRIVE = "https://drive.google.com/drive/u/2/folders/1s7BomVcbrpDfEMAjOXUNt593VuJ_KOHs"
-CREDENTIALS_FILE = "credentials.json"
+SECRETS_FILE = "secrets.toml"
 OUTPUT_FILE = "dados_consolidados.parquet"
 
 
@@ -209,12 +208,36 @@ def processar_zip(zip_bytes):
     return dados
 
 
-def executar_consolidacao():
-    print("🚀 Conectando ao Google Drive na máquina local...")
-    creds = service_account.Credentials.from_service_account_file(
-        CREDENTIALS_FILE,
-        scopes=["https://www.googleapis.com/auth/drive.readonly"],
+def obter_credenciais():
+    if not os.path.exists(SECRETS_FILE):
+        raise FileNotFoundError(
+            f"Arquivo '{SECRETS_FILE}' não encontrado na pasta!"
+        )
+
+    try:
+        import tomllib
+
+        with open(SECRETS_FILE, "rb") as f:
+            secrets = tomllib.load(f)
+    except ImportError:
+        import toml
+
+        secrets = toml.load(SECRETS_FILE)
+
+    info = dict(secrets["gdrive"])
+    if "folder_id" in info:
+        info.pop("folder_id")
+    if "token_uri" not in info:
+        info["token_uri"] = "https://oauth2.googleapis.com/token"
+
+    return service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
     )
+
+
+def executar_consolidacao():
+    print("🚀 Conectando ao Google Drive via secrets.toml...")
+    creds = obter_credenciais()
     service = build("drive", "v3", credentials=creds)
 
     def listar_recursivo(folder_id, caminho=""):
@@ -237,10 +260,7 @@ def executar_consolidacao():
 
     arquivos = listar_recursivo(FOLDER_ID)
     total = len(arquivos)
-    print(
-        f"📁 Pasta ID [{FOLDER_ID}]: Total de {total} arquivos encontrados no"
-        " Drive."
-    )
+    print(f"📁 Total de {total} arquivos encontrados no Drive.")
 
     todos_registros = []
     for idx, item in enumerate(arquivos, start=1):
