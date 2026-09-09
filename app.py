@@ -1,19 +1,11 @@
-import gc
-import io
 import os
-import re
-import zipfile
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 import pandas as pd
 import streamlit as st
 
-# Arquivo para persistência dos dados em disco
-CACHE_FILE = "dados_cache.parquet"
+DATA_FILE = "dados_consolidados.parquet"
 
 # ==========================================
-# 1. CONFIGURAÇÃO DA PÁGINA & ESTADO DE MEMÓRIA
+# 1. CONFIGURAÇÃO DA PÁGINA & CSS
 # ==========================================
 st.set_page_config(
     page_title="Executive B.I. - Auditoria Fiscal",
@@ -21,39 +13,27 @@ st.set_page_config(
     layout="wide",
 )
 
-
-# Função para carregar dados salvos em disco (Sobrevive a quedas de energia/reboots)
-def carregar_cache_disco():
-    if os.path.exists(CACHE_FILE):
-        try:
-            df = pd.read_parquet(CACHE_FILE)
-            ids = (
-                set(df["Arquivo_ID"].unique())
-                if "Arquivo_ID" in df.columns
-                else set()
-            )
-            ultimo = (
-                df["Arquivo"].iloc[-1]
-                if not df.empty and "Arquivo" in df.columns
-                else "Nenhum"
-            )
-            return df, ids, ultimo
-        except Exception:
-            pass
-    return pd.DataFrame(), set(), "Nenhum"
-
-
-# Carrega do disco na primeira execução
-if "df_raw" not in st.session_state:
-    df_c, ids_c, ultimo_c = carregar_cache_disco()
-    st.session_state["df_raw"] = df_c
-    st.session_state["arquivos_processados_ids"] = ids_c
-    st.session_state["ultimo_arquivo_nome"] = ultimo_c
-
-if "modo_automatico" not in st.session_state:
-    st.session_state["modo_automatico"] = False
-
-st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação com Google Drive")
+st.markdown(
+    """
+    <style>
+    .kpi-card {
+        background: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 10px 12px;
+        box-shadow: 0px 2px 4px rgba(0,0,0,0.05);
+        height: 130px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .kpi-title { font-size: 0.72rem; font-weight: 700; color: #555; text-transform: uppercase; }
+    .kpi-value { font-size: 1.25rem; font-weight: 800; color: #111; white-space: nowrap; }
+    .kpi-sub { font-size: 0.70rem; color: #00875A; font-weight: 600; }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
 
 # ==========================================
 # 2. PARÂMETROS TRIBUTÁRIOS
@@ -65,7 +45,6 @@ EMPRESAS_CONFIG = {
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "peso": 0.45,
     },
     "BR TOTTI LTDA / BW": {
         "icms": 0.06,
@@ -73,7 +52,6 @@ EMPRESAS_CONFIG = {
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "peso": 0.25,
     },
     "RTX IMPORTS COMERCIAL LTDA": {
         "icms": 0.06,
@@ -81,7 +59,6 @@ EMPRESAS_CONFIG = {
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "peso": 0.20,
     },
     "BG ADESIVOS LTDA": {
         "icms": 0.0439,
@@ -89,38 +66,7 @@ EMPRESAS_CONFIG = {
         "cofins": 0.0300,
         "irpj": 0.0120,
         "csll": 0.0108,
-        "peso": 0.10,
     },
-}
-
-MAPA_PASTAS_MESES = {
-    "0745": 1,
-    "0746": 2,
-    "0747": 3,
-    "0748": 4,
-    "0749": 5,
-    "0750": 6,
-    "0751": 7,
-    "0752": 8,
-    "0753": 9,
-    "0754": 10,
-    "0755": 11,
-    "0756": 12,
-}
-
-MESES_NOMES = {
-    1: "01-Jan",
-    2: "02-Fev",
-    3: "03-Mar",
-    4: "04-Abr",
-    5: "05-Mai",
-    6: "06-Jun",
-    7: "07-Jul",
-    8: "08-Ago",
-    9: "09-Set",
-    10: "10-Out",
-    11: "11-Nov",
-    12: "12-Dez",
 }
 
 
@@ -138,371 +84,25 @@ def fmt_brl(val):
     )
 
 
-# ==========================================
-# 3. EXTRAÇÃO DE DADOS
-# ==========================================
-def extrair_dados_arquivo(
-    bytes_content, caminho_completo, arq_id="", origem_dado="Livro Fiscal"
-):
-    registros = []
-    try:
-        raw_text = bytes_content.decode("latin-1", errors="ignore")
-        mes_num = 3
-        for pasta, m in MAPA_PASTAS_MESES.items():
-            if pasta in caminho_completo:
-                mes_num = m
-                break
-
-        cam_upper = caminho_completo.upper()
-        eh_entrada = any(
-            t in cam_upper or t in raw_text.upper()
-            for t in ["ENTRADA", "COMPRA", "FORNECEDOR"]
-        )
-        tipo_op = "Compra (Entrada)" if eh_entrada else "Venda (Saida)"
-
-        valores = re.findall(r"R\$\s*([\d\.\,]+)", raw_text)
-        valor_final = 0.0
-        if valores:
-            for v in valores:
-                try:
-                    v_c = float(v.replace(".", "").replace(",", "."))
-                    if v_c > valor_final:
-                        valor_final = v_c
-                except Exception:
-                    pass
-
-        if valor_final == 0.0:
-            numeros = re.findall(r"(\d+[\.\,]\d{2})", caminho_completo)
-            valor_final = (
-                float(numeros[0].replace(",", ".")) if numeros else 185000.0
-            )
-
-        nome_arq = caminho_completo.split("/")[-1]
-
-        emp_especifica = None
-        if "RTX" in cam_upper:
-            emp_especifica = "RTX IMPORTS COMERCIAL LTDA"
-        elif "BR_TOTTI" in cam_upper or "BW" in cam_upper:
-            emp_especifica = "BR TOTTI LTDA / BW"
-        elif "BG" in cam_upper or "ADESIVOS" in cam_upper:
-            emp_especifica = "BG ADESIVOS LTDA"
-
-        if emp_especifica:
-            registros.append({
-                "Arquivo": nome_arq,
-                "Arquivo_ID": arq_id,
-                "Caminho": caminho_completo,
-                "Mes_Num": mes_num,
-                "Tipo Operacao": tipo_op,
-                "Valor": float(valor_final),
-                "Empresa": emp_especifica,
-                "Origem": origem_dado,
-            })
-        else:
-            for emp, cfg in EMPRESAS_CONFIG.items():
-                registros.append({
-                    "Arquivo": nome_arq,
-                    "Arquivo_ID": arq_id,
-                    "Caminho": caminho_completo,
-                    "Mes_Num": mes_num,
-                    "Tipo Operacao": tipo_op,
-                    "Valor": float(valor_final * cfg["peso"]),
-                    "Empresa": emp,
-                    "Origem": origem_dado,
-                })
-    except Exception:
-        pass
-    return registros
-
-
-def processar_zip(zip_bytes, arq_id="", origem_dado="Livro Fiscal"):
-    dados = []
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-            for info in z.infolist():
-                if info.filename.startswith("__MACOSX") or info.is_dir():
-                    continue
-                fn = info.filename.lower()
-                if fn.endswith((
-                    ".pdf",
-                    ".xml",
-                    ".csv",
-                    ".xlsx",
-                    ".xls",
-                    ".txt",
-                )):
-                    res = extrair_dados_arquivo(
-                        z.read(info), info.filename, arq_id, origem_dado
-                    )
-                    if res:
-                        dados.extend(res)
-                elif fn.endswith((".zip", ".rar")):
-                    dados.extend(
-                        processar_zip(z.read(info), arq_id, origem_dado)
-                    )
-    except Exception:
-        pass
-    return dados
+st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação")
 
 
 # ==========================================
-# 4. INTEGRACAO DRIVE - BATCH DE 200
+# 3. LEITURA INSTANTÂNEA DOS DADOS
 # ==========================================
-def obter_servico_gdrive():
-    info = dict(st.secrets["gdrive"])
-    folder_id = info.pop("folder_id")
-    if "token_uri" not in info:
-        info["token_uri"] = "https://oauth2.googleapis.com/token"
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-    )
-    return build("drive", "v3", credentials=creds), folder_id
+@st.cache_data
+def carregar_dados_locais():
+    if os.path.exists(DATA_FILE):
+        return pd.read_parquet(DATA_FILE)
+    return pd.DataFrame()
 
 
-def listar_arquivos_recursivo(service, folder_id, caminho_atual=""):
-    arquivos_encontrados = []
-    try:
-        query = f"'{folder_id}' in parents and trashed = false"
-        results = (
-            service.files()
-            .list(q=query, fields="files(id, name, mimeType)", pageSize=1000)
-            .execute()
-        )
-        items = results.get("files", [])
-
-        for item in items:
-            mime = item.get("mimeType", "")
-            caminho_item = (
-                f"{caminho_atual}/{item['name']}"
-                if caminho_atual
-                else item["name"]
-            )
-
-            if mime == "application/vnd.google-apps.folder":
-                arquivos_encontrados.extend(
-                    listar_arquivos_recursivo(service, item["id"], caminho_item)
-                )
-            elif not mime.startswith("application/vnd.google-apps."):
-                arquivos_encontrados.append({
-                    "id": item["id"],
-                    "name": item["name"],
-                    "caminho": caminho_item,
-                })
-    except Exception as e:
-        st.sidebar.error(f"Erro ao mapear Drive: {e}")
-    return arquivos_encontrados
-
-
-def carregar_dados_gdrive_lote(tamanho_lote=200):
-    if "gdrive" not in st.secrets:
-        st.sidebar.error("❌ Seção [gdrive] não configurada no Secrets.")
-        st.session_state["modo_automatico"] = False
-        return False
-
-    try:
-        service, folder_id = obter_servico_gdrive()
-
-        with st.sidebar.status(
-            "⚡ Baixando lote de 200 arquivos...", expanded=True
-        ) as status:
-            files = listar_arquivos_recursivo(service, folder_id)
-            total = len(files)
-
-            if total == 0:
-                status.update(
-                    label="⚠️ Nenhum arquivo encontrado!", state="error"
-                )
-                st.session_state["modo_automatico"] = False
-                return False
-
-            arquivos_pendentes = [
-                f
-                for f in files
-                if f["id"] not in st.session_state["arquivos_processados_ids"]
-            ]
-            ja_processados = total - len(arquivos_pendentes)
-
-            if not arquivos_pendentes:
-                status.update(
-                    label=f"🎉 Todos os {total} arquivos foram sincronizados!",
-                    state="complete",
-                )
-                st.session_state["modo_automatico"] = False
-                return False
-
-            lote_atual = arquivos_pendentes[:tamanho_lote]
-            status.write(
-                f"📥 Baixando **{len(lote_atual)}** arquivos... (Faltam:"
-                f" {len(arquivos_pendentes) - len(lote_atual)})"
-            )
-
-            progress_bar = st.sidebar.progress(0)
-            log_container = st.sidebar.container()
-            novos_registros = []
-
-            for idx, file in enumerate(lote_atual):
-                progress_bar.progress((idx + 1) / len(lote_atual))
-
-                try:
-                    request = service.files().get_media(fileId=file["id"])
-                    fh = io.BytesIO()
-                    downloader = MediaIoBaseDownload(fh, request)
-                    done = False
-                    while not done:
-                        _, done = downloader.next_chunk()
-                    fh.seek(0)
-                    b = fh.read()
-
-                    if file["name"].lower().endswith(".zip"):
-                        res = processar_zip(b, file["id"], "NFs / Drive")
-                    else:
-                        res = extrair_dados_arquivo(
-                            b, file["caminho"], file["id"], "NFs / Drive"
-                        )
-
-                    if res:
-                        novos_registros.extend(res)
-
-                    st.session_state["arquivos_processados_ids"].add(file["id"])
-                    st.session_state["ultimo_arquivo_nome"] = file["name"]
-
-                    log_container.caption(
-                        f"✅ [{ja_processados + idx + 1}/{total}]"
-                        f" {file['name'][:20]}"
-                    )
-                    del b, fh
-                except Exception as ex:
-                    log_container.caption(
-                        f"❌ Erro em {file['name'][:15]}: {ex}"
-                    )
-
-            if novos_registros:
-                df_novos = pd.DataFrame(novos_registros)
-                df_novos["Ano"] = 2026
-                df_novos["Mês"] = df_novos["Mes_Num"].map(MESES_NOMES)
-
-                if st.session_state["df_raw"].empty:
-                    st.session_state["df_raw"] = df_novos
-                else:
-                    st.session_state["df_raw"] = pd.concat(
-                        [st.session_state["df_raw"], df_novos], ignore_index=True
-                    )
-
-                # SALVAMENTO EM DISCO APÓS CADA LOTE (Proteção contra queda de luz)
-                st.session_state["df_raw"].to_parquet(CACHE_FILE, index=False)
-
-            status.update(
-                label=(
-                    f"✅ Lote salvo! ({ja_processados + len(lote_atual)}/{total})"
-                ),
-                state="complete",
-            )
-            return True
-
-    except Exception as e:
-        st.sidebar.error(f"Erro no Drive: {e}")
-        st.session_state["modo_automatico"] = False
-        return False
-
+df_raw = carregar_dados_locais()
 
 # ==========================================
-# 5. CONTROLE LATERAL
+# 4. DASHBOARD E FILTROS
 # ==========================================
-st.sidebar.title("📥 Carga de Documentos")
-
-with st.sidebar.expander("📌 Status do Carregamento", expanded=True):
-    total_linhas = (
-        len(st.session_state["df_raw"])
-        if not st.session_state["df_raw"].empty
-        else 0
-    )
-    total_arqs = len(st.session_state["arquivos_processados_ids"])
-
-    st.markdown(f"**Arquivos Lidos:** `{total_arqs} / 1341`")
-    st.markdown(
-        f"**Último Arquivo:** `{st.session_state['ultimo_arquivo_nome']}`"
-    )
-    st.markdown(f"**Registros no Painel:** `{total_linhas}`")
-
-st.sidebar.markdown("#### Opção 1: Google Drive (Integrado)")
-
-if not st.session_state["modo_automatico"]:
-    if st.sidebar.button(
-        "▶️ Sincronizar Automático (Lote 200)", type="primary"
-    ):
-        st.session_state["modo_automatico"] = True
-        st.rerun()
-else:
-    if st.sidebar.button("⏹️ Pausar Sincronização"):
-        st.session_state["modo_automatico"] = False
-        st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("#### Opção 2: Upload Manual")
-arquivos_livros = st.sidebar.file_uploader(
-    "Upload (.ZIP / PDFs / XMLs)",
-    type=["zip", "pdf", "csv", "xlsx", "xml"],
-    accept_multiple_files=True,
-)
-
-if st.sidebar.button("⚙️ Processar Upload Manual"):
-    novos = []
-    if arquivos_livros:
-        for arq in arquivos_livros:
-            b = arq.read()
-            if arq.name.lower().endswith(".zip"):
-                res = processar_zip(b, arq.name, "Livro Fiscal")
-            else:
-                res = extrair_dados_arquivo(
-                    b, arq.name, arq.name, "Livro Fiscal"
-                )
-            if res:
-                novos.extend(res)
-            st.session_state["ultimo_arquivo_nome"] = arq.name
-
-    if novos:
-        df_novos = pd.DataFrame(novos)
-        df_novos["Ano"] = 2026
-        df_novos["Mês"] = df_novos["Mes_Num"].map(MESES_NOMES)
-
-        if st.session_state["df_raw"].empty:
-            st.session_state["df_raw"] = df_novos
-        else:
-            st.session_state["df_raw"] = pd.concat(
-                [st.session_state["df_raw"], df_novos], ignore_index=True
-            )
-
-        st.session_state["df_raw"].to_parquet(CACHE_FILE, index=False)
-        st.sidebar.success(f"✅ {len(novos)} registros adicionados!")
-        st.rerun()
-
-if st.sidebar.button("🗑️ Redefinir / Limpar Estado"):
-    if os.path.exists(CACHE_FILE):
-        os.remove(CACHE_FILE)
-    st.session_state["df_raw"] = pd.DataFrame()
-    st.session_state["arquivos_processados_ids"] = set()
-    st.session_state["ultimo_arquivo_nome"] = "Nenhum"
-    st.session_state["modo_automatico"] = False
-    st.rerun()
-
-# ==========================================
-# 6. EXECUÇÃO DA AUTOMAÇÃO EM LOOP
-# ==========================================
-if st.session_state["modo_automatico"]:
-    continuar = carregar_dados_gdrive_lote(tamanho_lote=200)
-    if continuar:
-        st.rerun()
-
-# ==========================================
-# 7. DASHBOARD E AUDITORIA
-# ==========================================
-if (
-    "df_raw" in st.session_state
-    and st.session_state["df_raw"] is not None
-    and not st.session_state["df_raw"].empty
-):
-    df_raw = st.session_state["df_raw"]
-
+if not df_raw.empty:
     st.markdown("### 🏢 Empresa:")
     empresas_opcoes = ["TODAS AS EMPRESAS (GRUPO)"] + list(
         EMPRESAS_CONFIG.keys()
@@ -654,16 +254,13 @@ if (
             .sum()
             .unstack(fill_value=0)
         )
-
         if "Livro Fiscal" not in df_conc.columns:
             df_conc["Livro Fiscal"] = 0.0
         if "NFs / Drive" not in df_conc.columns:
             df_conc["NFs / Drive"] = 0.0
-
         df_conc["Divergência (R$)"] = (
             df_conc["Livro Fiscal"] - df_conc["NFs / Drive"]
         )
-
         st.dataframe(
             df_conc.style.format("R$ {:,.2f}"), use_container_width=True
         )
@@ -677,9 +274,7 @@ if (
             .sum()
             .reset_index()
         )
-        st.bar_chart(
-            df_e.set_index("Empresa")["Valor"], color="#43A047"
-        )
+        st.bar_chart(df_e.set_index("Empresa")["Valor"], color="#43A047")
 
     with t4:
         st.dataframe(
@@ -695,7 +290,8 @@ if (
         )
 
 else:
-    st.info(
-        "👈 Clique em **▶️ Sincronizar Automático (Lote 200)** na barra lateral"
-        " para rodar a baixa contínua de 200 em 200 arquivos."
+    st.warning(
+        "⚠️ O arquivo `dados_consolidados.parquet` ainda não foi gerado!"
+        " Execute primeiro o comando `python gerar_base.py` no terminal da sua"
+        " máquina."
     )
