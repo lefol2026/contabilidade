@@ -1,0 +1,41 @@
+name: Gerar Base Parquet
+
+on:
+  workflow_dispatch: # Permite rodar manualmente com 1 clique
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install pandas pyarrow google-api-python-client google-auth-httplib2 google-auth-oauthlib pypdf toml
+
+      - name: Executar Consolidador
+        env:
+          GDRIVE_SECRETS: ${{ secrets.GDRIVE_SECRETS }}
+        run: |
+          python -c '
+          import os
+          secrets = os.environ.get("GDRIVE_SECRETS", "")
+          if secrets:
+              with open("secrets.toml", "w") as f:
+                  f.write(secrets)
+          '
+          python gerar_base.py
+
+      - name: Salvar Parquet no Repositorio
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add dados_consolidados.parquet
+          git commit -m "Auto: Atualizar dados_consolidados.parquet" || exit 0
+          git push
