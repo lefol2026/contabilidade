@@ -19,6 +19,23 @@ jobs:
         run: |
           pip install pandas pyarrow google-api-python-client google-auth-httplib2 google-auth-oauthlib pypdf toml
 
+      - name: Criar arquivo secrets.toml
+        run: |
+          mkdir -p .streamlit
+          cat << 'EOF' > .streamlit/secrets.toml
+          [gdrive]
+          type = "service_account"
+          project_id = "contabilidade-drive"
+          private_key_id = "1s7BomVcbrpDfEMAjOXUNt593VuJ_KOHs"
+          private_key = "${{ secrets.GDRIVE_PRIVATE_KEY }}"
+          client_email = "${{ secrets.GDRIVE_CLIENT_EMAIL }}"
+          client_id = "${{ secrets.GDRIVE_CLIENT_ID }}"
+          auth_uri = "https://accounts.google.com/o/oauth2/auth"
+          token_uri = "https://oauth2.googleapis.com/token"
+          auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+          EOF
+          cp .streamlit/secrets.toml secrets.toml
+
       - name: Executar Consolidador
         run: |
           python gerar_base.py
