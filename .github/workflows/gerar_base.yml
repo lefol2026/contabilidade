@@ -1,40 +1,32 @@
-def obter_credenciais():
-    # Procura o secrets.toml na raiz ou dentro da pasta .streamlit
-    caminhos_possiveis = [
-        "secrets.toml",
-        ".streamlit/secrets.toml",
-        os.path.join(os.path.dirname(__file__), "secrets.toml"),
-        os.path.join(os.path.dirname(__file__), ".streamlit", "secrets.toml"),
-    ]
+name: Gerar Base Parquet
 
-    caminho_encontrado = None
-    for c in caminhos_possiveis:
-        if os.path.exists(c):
-            caminho_encontrado = c
-            break
+on:
+  workflow_dispatch:
 
-    if not caminho_encontrado:
-        raise FileNotFoundError(
-            "Arquivo 'secrets.toml' não foi encontrado nem na raiz nem em"
-            " '.streamlit/'!"
-        )
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
 
-    try:
-        import tomllib
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-        with open(caminho_encontrado, "rb") as f:
-            secrets = tomllib.load(f)
-    except ImportError:
-        import toml
+      - name: Instalar dependencias
+        run: |
+          pip install pandas pyarrow google-api-python-client google-auth-httplib2 google-auth-oauthlib pypdf toml
 
-        secrets = toml.load(caminho_encontrado)
+      - name: Executar Consolidador
+        run: |
+          python gerar_base.py
 
-    info = dict(secrets["gdrive"])
-    if "folder_id" in info:
-        info.pop("folder_id")
-    if "token_uri" not in info:
-        info["token_uri"] = "https://oauth2.googleapis.com/token"
-
-    return service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-    )
+      - name: Salvar Parquet no Repositorio
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add dados_consolidados.parquet
+          git commit -m "Auto: Atualizar dados_consolidados.parquet" || exit 0
+          git push
