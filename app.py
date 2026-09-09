@@ -1,8 +1,16 @@
+import io
 import os
+import re
+import xml.etree.ElementTree as ET
+import zipfile
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 import pandas as pd
 import streamlit as st
 
 DATA_FILE = "dados_consolidados.parquet"
+FOLDER_ID = "1s7BomVcbrpDfEMAjOXUNt593VuJ_KOHs"
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA & CSS
@@ -35,9 +43,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ==========================================
-# 2. PARÂMETROS TRIBUTÁRIOS
-# ==========================================
 EMPRESAS_CONFIG = {
     "MCRTOTTI LTDA / BRA": {
         "icms": 0.06,
@@ -84,24 +89,138 @@ def fmt_brl(val):
     )
 
 
-st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação")
-
-
 # ==========================================
-# 3. LEITURA INSTANTÂNEA DOS DADOS
+# 2. PROCESSADOR INTEGRADO VIA STREAMLIT
 # ==========================================
-@st.cache_data
-def carregar_dados_locais():
+@st.cache_data(ttl=86400)
+def carregar_ou_gerar_dados():
     if os.path.exists(DATA_FILE):
         return pd.read_parquet(DATA_FILE)
-    return pd.DataFrame()
 
+    if "gdrive" not in st.secrets:
+        st.error(
+            "⚠️ Configuração de credenciais do Google Drive não encontrada no"
+            " Secrets do Streamlit Cloud."
+        )
+        return pd.DataFrame()
 
-df_raw = carregar_dados_locais()
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    status_text.info("🚀 Conectando ao Google Drive para consolidar notas...")
+
+    info = dict(st.secrets["gdrive"])
+    if "folder_id" in info:
+        info.pop("folder_id")
+    if "token_uri" not in info:
+        info["token_uri"] = "https://oauth2.googleapis.com/token"
+
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    service = build("drive", "v3", credentials=creds)
+
+    def listar_recursivo(folder_id, caminho=""):
+        arqs = []
+        q = f"'{folder_id}' in parents and trashed = false"
+        res = (
+            service.files()
+            .list(q=q, fields="files(id, name, mimeType)", pageSize=1000)
+            .execute()
+        )
+        for item in res.get("files", []):
+            p = f"{caminho}/{item['name']}" if caminho else item["name"]
+            if item["mimeType"] == "application/vnd.google-apps.folder":
+                arqs.extend(listar_recursivo(item["id"], p))
+            elif not item["mimeType"].startswith(
+                "application/vnd.google-apps."
+            ):
+                arqs.append({"id": item["id"], "caminho": p, "nome": item["name"]})
+        return arqs
+
+    arquivos = listar_recursivo(FOLDER_ID)
+    total = len(arquivos)
+    status_text.info(
+        f"📁 {total} arquivos encontrados. Processando faturamento..."
+    )
+
+    registros = []
+    for idx, item in enumerate(arquivos, start=1):
+        progress_bar.progress(idx / total)
+        try:
+            request = service.files().get_media(fileId=item["id"])
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            fh.seek(0)
+            b = fh.read()
+
+            nome_arq = item["nome"]
+            fn_lower = nome_arq.lower()
+            cam_upper = item["caminho"].upper()
+
+            valor_final = 0.0
+            if fn_lower.endswith(".xml"):
+                try:
+                    root = ET.fromstring(b)
+                    for elem in root.iter():
+                        if "}" in elem.tag:
+                            elem.tag = elem.tag.split("}", 1)[1]
+                    v_nf = root.find(".//vNF")
+                    if v_nf is not None and v_nf.text:
+                        valor_final = float(v_nf.text)
+                    else:
+                        v_prod = root.find(".//vProd")
+                        if v_prod is not None and v_prod.text:
+                            valor_final = float(v_prod.text)
+                except Exception:
+                    pass
+
+            if valor_final > 0:
+                emp_especifica = "MCRTOTTI LTDA / BRA"
+                if "RTX" in cam_upper:
+                    emp_especifica = "RTX IMPORTS COMERCIAL LTDA"
+                elif "BR_TOTTI" in cam_upper or "BW" in cam_upper:
+                    emp_especifica = "BR TOTTI LTDA / BW"
+                elif "BG" in cam_upper or "ADESIVOS" in cam_upper:
+                    emp_especifica = "BG ADESIVOS LTDA"
+
+                eh_entrada = any(
+                    t in cam_upper for t in ["ENTRADA", "COMPRA", "FORNECEDOR"]
+                )
+                registros.append({
+                    "Arquivo": nome_arq,
+                    "Caminho": item["caminho"],
+                    "Mes_Num": 3,
+                    "Mês": "03-Mar",
+                    "Ano": 2026,
+                    "Tipo Operacao": (
+                        "Compra (Entrada)" if eh_entrada else "Venda (Saida)"
+                    ),
+                    "Valor": valor_final,
+                    "Empresa": emp_especifica,
+                    "Origem": "NFs / Drive",
+                })
+        except Exception:
+            continue
+
+    status_text.empty()
+    progress_bar.empty()
+
+    df = pd.DataFrame(registros)
+    if not df.empty:
+        df.to_parquet(DATA_FILE, index=False)
+    return df
+
 
 # ==========================================
-# 4. DASHBOARD E FILTROS
+# 3. INTERFACE DO DASHBOARD
 # ==========================================
+st.title("👑 Executive B.I. — Apuração Fiscal & Conciliação")
+
+df_raw = carregar_ou_gerar_dados()
+
 if not df_raw.empty:
     st.markdown("### 🏢 Empresa:")
     empresas_opcoes = ["TODAS AS EMPRESAS (GRUPO)"] + list(
@@ -207,91 +326,16 @@ if not df_raw.empty:
         )
 
     st.markdown("---")
-
-    t1, t2, t3, t4 = st.tabs([
-        "📈 DRE & Tendências",
-        "🔍 Conciliação (Livro vs Drive)",
-        "🏢 Por Empresa",
-        "📋 Auditoria",
-    ])
-
-    with t1:
-        g1, g2 = st.columns([2, 1])
-        with g1:
-            st.markdown(f"**Operacional Mês a Mês ({empresa_sel})**")
-            df_chart_base = (
-                df_raw
-                if empresa_sel == "TODAS AS EMPRESAS (GRUPO)"
-                else df_raw[df_raw["Empresa"] == empresa_sel]
-            )
-            df_v = (
-                df_chart_base[df_chart_base["Tipo Operacao"] == "Venda (Saida)"]
-                .groupby("Mês")["Valor"]
-                .sum()
-                .rename("Vendas")
-            )
-            df_c = (
-                df_chart_base[
-                    df_chart_base["Tipo Operacao"] == "Compra (Entrada)"
-                ]
-                .groupby("Mês")["Valor"]
-                .sum()
-                .rename("Compras")
-            )
-            st.bar_chart(pd.concat([df_v, df_c], axis=1).fillna(0))
-        with g2:
-            st.markdown(f"**Sintético Impostos ({mes_sel})**")
-            df_t = pd.DataFrame({
-                "Imposto": ["ICMS TTS", "PIS/COFINS", "IRPJ/CSLL"],
-                "Valor": [icms, piscofins, irpjcsll],
-            }).set_index("Imposto")
-            st.bar_chart(df_t, color="#FF8F00")
-
-    with t2:
-        st.subheader("🔍 Confronto: Livro Fiscal vs. Google Drive / ERP")
-        df_conc = (
-            df_filtrado.groupby(["Mês", "Origem"])["Valor"]
-            .sum()
-            .unstack(fill_value=0)
-        )
-        if "Livro Fiscal" not in df_conc.columns:
-            df_conc["Livro Fiscal"] = 0.0
-        if "NFs / Drive" not in df_conc.columns:
-            df_conc["NFs / Drive"] = 0.0
-        df_conc["Divergência (R$)"] = (
-            df_conc["Livro Fiscal"] - df_conc["NFs / Drive"]
-        )
-        st.dataframe(
-            df_conc.style.format("R$ {:,.2f}"), use_container_width=True
-        )
-        st.bar_chart(df_conc[["Livro Fiscal", "NFs / Drive"]])
-
-    with t3:
-        st.markdown("**Faturamento por Empresa**")
-        df_e = (
-            df_filtrado[df_filtrado["Tipo Operacao"] == "Venda (Saida)"]
-            .groupby("Empresa")["Valor"]
-            .sum()
-            .reset_index()
-        )
-        st.bar_chart(df_e.set_index("Empresa")["Valor"], color="#43A047")
-
-    with t4:
-        st.dataframe(
-            df_filtrado[[
-                "Arquivo",
-                "Origem",
-                "Mês",
-                "Empresa",
-                "Tipo Operacao",
-                "Valor",
-            ]],
-            use_container_width=True,
-        )
-
-else:
-    st.warning(
-        "⚠️ O arquivo `dados_consolidados.parquet` ainda não foi gerado!"
-        " Execute primeiro o comando `python gerar_base.py` no terminal da sua"
-        " máquina."
+    st.dataframe(
+        df_filtrado[[
+            "Arquivo",
+            "Origem",
+            "Mês",
+            "Empresa",
+            "Tipo Operacao",
+            "Valor",
+        ]],
+        use_container_width=True,
     )
+else:
+    st.warning("Nenhum dado encontrado ou processado no momento.")
