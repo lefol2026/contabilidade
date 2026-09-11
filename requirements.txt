@@ -1,4 +1,6 @@
 streamlit
 pandas
-google-api-python-client
-google-auth
+numpy
+plotly
+openpyxl
+pyarrow
